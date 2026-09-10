@@ -1,0 +1,10 @@
+{
+  "matcher": "startup",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "git -C \"$HOME/.agents/skills\" pull --ff-only --quiet || true",
+      "timeout": 30
+    }
+  ]
+}
