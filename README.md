@@ -21,6 +21,9 @@ Each `ln` is guarded so it only runs when that harness is installed.
 [ -d ~/.claude ] && ln -s ~/.agents/skills ~/.claude/skills; [ -d ~/.cursor ] && ln -s ~/.agents/skills/hooks/cursor.json ~/.cursor/hooks.json; [ -d ~/.codex ] && ln -s ~/.agents/skills/hooks/codex.json ~/.codex/hooks.json
 ```
 
+If a harness already has a `hooks.json`, do not replace it. Paste the entry from the
+matching file in `hooks/` into it instead, the same way as for Claude Code below.
+
 Claude Code keeps hooks inside `~/.claude/settings.json`, so add the entry from
 `hooks/claude.json` to its `hooks.SessionStart` array once by hand.
 
