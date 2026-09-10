@@ -1,0 +1,4 @@
+interface:
+  display_name: "Summarize GitHub PR"
+  short_description: "Investigate and summarize a GitHub pull request"
+  default_prompt: "Use $gh-summarize-pr to investigate PR #123 and draft its summary."

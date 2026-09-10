@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create GitHub Issue"
+  short_description: "Draft and file a grounded GitHub issue"
+  default_prompt: "Use $gh-create-issue to draft a bug report about the paste failing on release, then create it once I approve."

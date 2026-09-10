@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agnostic Skill"
+  short_description: "Maintain portable cross-harness skills"
+  default_prompt: "Use $agnostic-skill to create or update a portable skill for the requested agent harnesses."

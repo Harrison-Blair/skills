@@ -1,0 +1,4 @@
+interface:
+  display_name: "Triage GitHub PR Feedback"
+  short_description: "Fix and resolve unresolved PR review threads"
+  default_prompt: "Use $gh-triage-pr to pull the unresolved review threads on my PR, plan and implement fixes, and resolve them."

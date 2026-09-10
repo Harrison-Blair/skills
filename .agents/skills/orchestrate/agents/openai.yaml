@@ -1,0 +1,6 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Coordinate delegated work through independent verification"
+  default_prompt: "Use $orchestrate to coordinate this session: investigate directly, delegate edits, use interrogate for design decisions, and independently verify changes through completion or a concrete blocker."
+policy:
+  allow_implicit_invocation: false
