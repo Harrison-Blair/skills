@@ -1,8 +1,19 @@
 # skills
 
-Portable agent skills, usable from Claude Code, Codex, and other harnesses.
+Portable agent skills for Claude Code, Codex, OpenCode, and other harnesses.
 
-- `.agents/skills/<name>/` is the canonical source for each skill.
-- `.claude/skills/<name>` is a relative symlink so Claude Code discovers the same skill in this repository.
+Layout is flat: every top-level directory is one skill containing a `SKILL.md`
+with `name` and `description` frontmatter. Provider-only metadata lives in
+sidecar files such as `agents/openai.yaml`. See `agnostic-skill` for conventions.
 
-Each skill has a `SKILL.md` with `name` and `description` frontmatter. Provider-only metadata lives in sidecar files such as `agents/openai.yaml`. See `agnostic-skill` for the conventions.
+## Install
+
+Clone this repository to `~/.agents/skills`, then link it for Claude Code:
+
+```sh
+ln -s ~/.agents/skills ~/.claude/skills
+```
+
+On Windows use a junction: `New-Item -ItemType Junction -Path "$HOME\.claude\skills" -Target "$HOME\.agents\skills"`.
+
+Codex and OpenCode read `~/.agents/skills` directly. Pull to update; push edits manually.
