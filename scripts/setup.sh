@@ -23,7 +23,7 @@ resolve() { (cd "$1" 2>/dev/null && pwd -P); }
 is_link() {
   [ -L "$1" ] && return 0
   is_windows && [ -d "$1" ] &&
-    MSYS_NO_PATHCONV=1 cmd /c "dir /AL /B \"$(cygpath -w "$(dirname "$1")")\"" 2>/dev/null |
+    MSYS_NO_PATHCONV=1 cmd /c dir /AL /B "$(cygpath -w "$(dirname "$1")")" 2>/dev/null |
     tr -d '\r' | grep -qx "$(basename "$1")"
 }
 
@@ -41,7 +41,10 @@ link_dir() {
   mkdir -p "$(dirname "$link")"
   if is_windows; then
     # Junction: no admin rights needed, absolute Windows paths required.
-    MSYS_NO_PATHCONV=1 cmd /c "mklink /J \"$(cygpath -w "$link")\" \"$(cygpath -w "$target")\"" >/dev/null
+    # Pass as separate argv entries -- wrapping this in one quoted string for
+    # `cmd /c` trips a cmd.exe re-quoting bug ("filename... is incorrect")
+    # once more than one quoted path is embedded in it.
+    MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$link")" "$(cygpath -w "$target")" >/dev/null
   else
     ln -s "$target" "$link"
   fi
