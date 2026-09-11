@@ -36,8 +36,7 @@ Setup does the following, skipping any harness whose config directory is absent:
 - Links the Pi extension into `~/.pi/agent/extensions/skills-autopull`.
 - Merges one `SessionStart` hook into `~/.claude/settings.json` and
   `~/.codex/hooks.json`, next to whatever hooks are already there. The hook runs
-  `scripts/setup.sh --sync` from this clone. A `.bak-skills` copy of each file is
-  written before it changes. The merge uses `python3`, `python`, or `powershell`;
+  `scripts/setup.sh --sync` from this clone. The merge uses `python3`, `python`, or `powershell`;
   if none is found, setup prints the entry for you to paste.
 
 Two manual steps remain:

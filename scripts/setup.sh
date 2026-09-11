@@ -113,7 +113,7 @@ merge_hooks() {
 
   if [ -n "$py" ]; then
     SNIPPET="$snippet" "$py" - "$file" <<'PY'
-import json, os, shutil, sys
+import json, os, sys
 path = sys.argv[1]
 tpl = json.loads(os.environ["SNIPPET"])
 data = {}
@@ -132,15 +132,11 @@ for event, groups in tpl.get("hooks", {}).items():
 if json.dumps(data, sort_keys=True) == before:
     print(f"ok: {path} already up to date")
     sys.exit(0)
-note = ""
-if os.path.exists(path):
-    shutil.copyfile(path, path + ".bak-skills")
-    note = f" (backup: {path}.bak-skills)"
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
-print(f"updated: {path}{note}")
+print(f"updated: {path}")
 PY
     return
   fi
@@ -164,11 +160,9 @@ foreach ($ev in $tpl.hooks.PSObject.Properties) {
   $data.hooks.($ev.Name) = $existing
 }
 if (-not $changed) { Write-Output "ok: $Path already up to date"; exit 0 }
-$note = ""
-if (Test-Path $Path) { Copy-Item $Path "$Path.bak-skills"; $note = " (backup: $Path.bak-skills)" }
 New-Item -ItemType Directory -Force (Split-Path $Path) | Out-Null
 $data | ConvertTo-Json -Depth 20 | Set-Content $Path -Encoding UTF8
-Write-Output "updated: $Path$note"
+Write-Output "updated: $Path"
 PS
     return
   fi
