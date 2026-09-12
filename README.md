@@ -109,7 +109,16 @@ session start.
 
 ## Testing setup changes
 
-Run `python3 -B -m unittest discover -s tests -v` on Linux/macOS. Tests use
-temporary fixtures and do not change your installed skills or hooks. They cover
-setup, sync, migration, conflicts, and pruning. Windows command boundaries are
-simulated; native junction migration still needs a smoke test in Windows Git Bash.
+Install the CI-only parsers and reference validator, then run the checks locally:
+
+```sh
+python3 -m pip install -r requirements-ci.txt
+python3 -B -m unittest discover -s tests -v
+python3 scripts/validate_repo.py
+shellcheck scripts/setup.sh
+```
+
+Tests use temporary fixtures and do not change your installed skills or hooks.
+They cover setup, sync, migration, conflicts, pruning, metadata, and Markdown
+links. The Windows job runs the junction tests with Git for Windows Bash; native
+Windows testing is required before a junction change is considered verified.
