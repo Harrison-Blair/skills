@@ -14,20 +14,46 @@ pi/skills-autopull/      Pi extension, linked into ~/.pi/agent/extensions
 scripts/setup.sh         one-time setup, and the --sync command the hooks run
 ```
 
-## Setup
+## Setup and updating
 
-Clone anywhere, then run setup once. Linux and macOS:
+One line, on Linux, macOS, or Windows in Git Bash:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Harrison-Blair/skills/main/scripts/setup.sh | sh
+```
+
+Run with no clone around it, the script clones the repo to `~/source/skills`
+(set `SKILLS_HOME` for another path) and hands the rest of the run to that
+copy, so the hook it installs names a path that keeps working. It refuses to
+touch a directory that is already there and is not this repo.
+
+To choose the location yourself, clone anywhere and run setup from it:
 
 ```sh
 git clone https://github.com/Harrison-Blair/skills.git ~/source/skills
 ~/source/skills/scripts/setup.sh
 ```
 
-Windows: run the same two commands in Git Bash. Directory links are created as
-junctions, so no admin rights are needed.
+On Windows the directory links are created as junctions, so no admin rights are
+needed.
 
-Setup does the following, skipping any harness whose config directory is absent:
+That run installs one `SessionStart` hook per harness, and the hook runs
+`scripts/setup.sh --sync` from this clone at each session start. Sync does
+everything setup does, so later changes -- new skills, an edited hook template
+-- arrive on their own; setup is only needed again after moving or re-cloning
+the repo. To sync by hand:
 
+```sh
+~/source/skills/scripts/setup.sh --sync
+```
+
+Both modes do the following, skipping any harness whose config directory is
+absent:
+
+- Fast-forwards the clone. If the pull moved `HEAD`, the script re-executes
+  itself once so the rest of the run comes from the new copy rather than a
+  half-read old one. A failed pull still links the current checkout and never
+  fails a session.
 - Links each `skills/<name>` into `~/.agents/skills/<name>`. Codex, Cursor, Pi,
   and OpenCode read that directory directly.
 - Keeps `~/.claude/skills` as a real directory and links each shared skill into
@@ -38,9 +64,25 @@ Setup does the following, skipping any harness whose config directory is absent:
   with a warning.
 - Links the Pi extension into `~/.pi/agent/extensions/skills-autopull`.
 - Merges one `SessionStart` hook into `~/.claude/settings.json` and
-  `~/.codex/hooks.json`, next to whatever hooks are already there. The hook runs
-  `scripts/setup.sh --sync` from this clone. The merge uses `python3`, `python`, or `powershell`;
-  if none is found, setup prints the entry for you to paste.
+  `~/.codex/hooks.json`, next to whatever hooks are already there. The entries
+  this repo manages are the ones running `scripts/setup.sh --sync`: the entry
+  for this clone is rewritten in place when the template changes, an entry for
+  a clone that no longer exists on disk is dropped, and an entry for a second
+  clone that does exist is kept with a warning. Every other hook is left alone
+  and the file is replaced atomically. The merge uses `python3`, `python`, or
+  `powershell`; if none is found, the entry is printed for you to paste.
+- Prunes the links it made for skills that are gone: broken symlinks on
+  Linux/macOS, and on Windows junctions that point into this clone's `skills/`
+  (or, in Claude's directory, into `~/.agents/skills`) at something no longer
+  there. A junction pointing anywhere else is left alone, and removal is
+  `rmdir` without `/S`, which unlinks the junction and never its target.
+
+Setup reports each step; sync is quiet on stdout and prints only warnings. One
+run happens at a time: each holds `.sync.lock` in the clone, a directory
+reclaimed only once it is older than ten minutes. A sync that finds the lock
+held exits straight away without doing anything, so it never delays a session;
+a setup run waits a few seconds and then says so. Pulls are throttled with
+`.sync-stamp` to about one a minute, so a burst of session starts fetches once.
 
 Two manual steps remain:
 
@@ -50,19 +92,19 @@ Two manual steps remain:
   Settings > Rules, Skills, Subagents and it will run the hook from
   `~/.claude/settings.json`.
 
-## Updating
-
-The installed session-start hooks run `scripts/setup.sh --sync`, which attempts
-to fast-forward the clone and reconciles individual skill links in both
-`~/.agents/skills` and `~/.claude/skills`. Sync also migrates the older Claude
-whole-directory link. Normal output is suppressed; conflicts produce warnings,
-and a failed pull does not prevent linking the current checkout or fail a session.
-On Linux/macOS, broken links matching this setup's managed targets are pruned.
-On Windows, remove stale junctions manually. To update by hand:
+## Uninstalling
 
 ```sh
-~/source/skills/scripts/setup.sh --sync
+~/source/skills/scripts/setup.sh --uninstall
 ```
+
+This reverses what setup installed for that clone and prints each removal: the
+skill links in `~/.agents/skills` that point into it, the links in
+`~/.claude/skills` that point at those, the Pi extension link, and the hook
+entries running that clone's `--sync`. It never removes a real directory, a
+link pointing anywhere else, a hook this repo did not write, or an entry for a
+different clone -- including a dead one, which belongs to whoever owns it. The
+clone itself stays; delete it afterwards if you want it gone.
 
 ## Machine-local skills
 
@@ -98,9 +140,9 @@ the old local entry so setup can create its link, then commit and push.
 
 ## Adding hooks later
 
-Add entries to `hooks/claude.json` or `hooks/codex.json`, push, then re-run
-`scripts/setup.sh` on each machine. Entries are matched by command string, so
-re-running is safe.
+Add entries to `hooks/claude.json` or `hooks/codex.json` and push. Every machine
+picks them up at its next session start, because sync re-merges the templates
+and rewrites the entry it manages for that clone.
 
 ## Publishing edits
 
@@ -119,6 +161,8 @@ shellcheck scripts/setup.sh
 ```
 
 Tests use temporary fixtures and do not change your installed skills or hooks.
-They cover setup, sync, migration, conflicts, pruning, metadata, and Markdown
-links. The Windows job runs the junction tests with Git for Windows Bash; native
-Windows testing is required before a junction change is considered verified.
+They cover setup, sync, hook merging, the post-pull re-exec, the sync lock,
+bootstrap, uninstall, migration, conflicts, pruning, metadata, and Markdown
+links. The Windows job runs the junction tests with Git for Windows Bash;
+native Windows testing is required before a junction change -- pruning
+included -- is considered verified.

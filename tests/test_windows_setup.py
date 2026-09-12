@@ -103,6 +103,46 @@ class WindowsSetupTests(unittest.TestCase):
         self.assertEqual(migrated.resolve(), (self.shared / "machine-shared").resolve())
         self.assertTrue((self.shared / "machine-shared/SKILL.md").is_file())
 
+    def test_stale_junctions_are_pruned_and_other_junctions_survive(self):
+        doomed = self.add_skill(self.repo / "skills/doomed")
+        self.run_setup()
+        self.assertTrue(self.is_junction(self.shared / "doomed"))
+        self.assertTrue(self.is_junction(self.claude / "doomed"))
+        external = self.add_skill(self.base / "external")
+        self.make_junction(self.shared / "unrelated", external)
+        local = self.add_skill(self.shared / "machine-shared")
+        shutil.rmtree(doomed)
+        result = self.run_setup("--sync")
+        self.assertFalse(self.is_junction(self.shared / "doomed"))
+        self.assertFalse((self.shared / "doomed").exists())
+        self.assertFalse(self.is_junction(self.claude / "doomed"))
+        self.assertFalse((self.claude / "doomed").exists())
+        # A junction out of this setup's reach, and the real directories on the
+        # far side of every junction, are untouched.
+        self.assertTrue(self.is_junction(self.shared / "unrelated"))
+        self.assertEqual((self.shared / "unrelated").resolve(), external.resolve())
+        self.assertTrue((external / "SKILL.md").is_file())
+        self.assertTrue((local / "SKILL.md").is_file())
+        self.assertTrue(self.is_junction(self.claude / "shared-one"))
+        self.assertEqual(result.returncode, 0)
+
+    def test_uninstall_removes_junctions_and_leaves_real_directories(self):
+        self.run_setup()
+        external = self.add_skill(self.base / "external")
+        self.make_junction(self.claude / "unrelated", external)
+        local = self.add_skill(self.claude / "claude-only")
+        result = self.run_setup("--uninstall")
+        self.assertIn("removed:", result.stdout)
+        for gone in (self.claude / "shared-one", self.shared / "shared-one"):
+            self.assertFalse(self.is_junction(gone), gone)
+            self.assertFalse(gone.exists(), gone)
+        self.assertTrue(self.claude.is_dir())
+        self.assertFalse(self.is_junction(self.claude))
+        self.assertTrue(self.is_junction(self.claude / "unrelated"))
+        self.assertTrue((external / "SKILL.md").is_file())
+        self.assertTrue((local / "SKILL.md").is_file())
+        self.assertTrue((self.repo / "skills/shared-one/SKILL.md").is_file())
+
     def test_local_folders_conflicts_and_unrelated_junctions_survive(self):
         self.run_setup()
         local = self.add_skill(self.claude / "claude-only")
