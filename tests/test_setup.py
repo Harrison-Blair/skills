@@ -64,7 +64,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(
             (self.claude / "shared-one").readlink(), self.shared / "shared-one"
         )
-        self.assertEqual((self.claude / "shared-one").resolve(), self.skill)
+        self.assertEqual((self.claude / "shared-one").resolve(), self.skill.resolve())
 
     def test_fresh_setup_and_repeat_preserve_hooks(self):
         settings = self.claude.parent / "settings.json"
@@ -84,7 +84,7 @@ class SetupTests(unittest.TestCase):
                 self.claude.symlink_to(self.shared, target_is_directory=True)
                 self.run_setup(mode)
                 self.assert_shared_link()
-                self.assertEqual((self.claude / local.name).resolve(), local)
+                self.assertEqual((self.claude / local.name).resolve(), local.resolve())
                 self.assertEqual((local / "SKILL.md").read_text(),
                                  "local contents must survive\n")
                 shutil.rmtree(self.claude)
@@ -117,9 +117,9 @@ class SetupTests(unittest.TestCase):
         self.run_setup("--sync")
         self.assertFalse((self.shared / "shared-one").is_symlink())
         self.assertFalse((self.claude / "shared-one").is_symlink())
-        self.assertEqual((self.claude / "new-skill").resolve(), added)
-        self.assertEqual((self.claude / shared_local.name).resolve(), shared_local)
-        self.assertEqual((self.claude / "external").resolve(), external)
+        self.assertEqual((self.claude / "new-skill").resolve(), added.resolve())
+        self.assertEqual((self.claude / shared_local.name).resolve(), shared_local.resolve())
+        self.assertEqual((self.claude / "external").resolve(), external.resolve())
         for name in ("unrelated-broken", "different-name"):
             self.assertTrue((self.claude / name).is_symlink())
         self.assertTrue((self.shared / "unrelated-broken").is_symlink())
@@ -179,7 +179,7 @@ class SetupTests(unittest.TestCase):
 is_windows() { return 0; }
 resolve() {
   if [ "$1" = "$SKILLS_TEST_HOME/.claude/skills" ]; then
-    if [ "$TEST_UNRELATED" = 1 ]; then echo /unrelated; else echo "$AGENTS_SKILLS"; fi
+    if [ "$TEST_UNRELATED" = 1 ]; then echo /unrelated; else (cd "$AGENTS_SKILLS" && pwd -P); fi
   else
     (cd "$1" && pwd -P)
   fi
