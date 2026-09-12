@@ -24,7 +24,7 @@ is_link() {
   [ -L "$1" ] && return 0
   is_windows && [ -d "$1" ] &&
     MSYS_NO_PATHCONV=1 cmd /c dir /AL /B "$(cygpath -w "$(dirname "$1")")" 2>/dev/null |
-    tr -d '\r' | grep -qx "$(basename "$1")"
+    tr -d '\r' | grep -Fxq -- "$(basename "$1")"
 }
 
 # link_dir LINK TARGET: create a directory link; never delete anything real.
@@ -72,13 +72,40 @@ link_skills() {
 
 link_claude_skills() {
   [ -d "$HOME/.claude" ] || { echo "skip: ~/.claude not found (Claude Code)"; return 0; }
-  local link="$HOME/.claude/skills"
-  if [ -d "$link" ] && ! is_link "$link" && [ -n "$(ls -A "$link" 2>/dev/null)" ]; then
-    echo "warn: $link is a real directory. Move its contents into $AGENTS_SKILLS," >&2
-    echo "      delete it, and re-run setup so it can become a link." >&2
-    return 0
+  local root="$HOME/.claude/skills" target d name
+  target="$(resolve "$AGENTS_SKILLS")" || return 1
+  if is_link "$root"; then
+    if [ "$(resolve "$root")" != "$target" ]; then
+      echo "warn: $root is not a link to $AGENTS_SKILLS; left untouched" >&2
+      return 1
+    fi
+    # Migrate the old whole-directory link without touching its contents.
+    # A Windows junction needs rmdir (never /S); a symlink only needs unlinking.
+    if [ -L "$root" ]; then
+      rm "$root" || return 1
+    else
+      MSYS_NO_PATHCONV=1 cmd /c rmdir "$(cygpath -w "$root")" || return 1
+    fi
+  elif [ -e "$root" ] && [ ! -d "$root" ]; then
+    echo "warn: $root is not a directory; left untouched" >&2
+    return 1
   fi
-  link_dir "$link" "$AGENTS_SKILLS"
+  mkdir -p "$root" || return 1
+  for d in "$AGENTS_SKILLS"/*; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    link_dir "$root/$name" "$d"
+  done
+  if is_windows; then
+    return 0  # as with repo skills, stale junction cleanup remains manual
+  fi
+  for d in "$root"/*; do
+    [ -L "$d" ] || continue
+    name="$(basename "$d")"
+    if [ "$(readlink "$d")" = "$AGENTS_SKILLS/$name" ] && [ ! -e "$d" ]; then
+      rm "$d" && echo "pruned: claude/$name"
+    fi
+  done
 }
 
 link_pi() {
@@ -183,6 +210,7 @@ case "$MODE" in
   --sync)
     pull
     link_skills >/dev/null
+    link_claude_skills >/dev/null
     link_pi >/dev/null
     exit 0
     ;;
@@ -205,7 +233,8 @@ Next steps:
   - Codex: open Codex and run /hooks to review and trust the new SessionStart hook.
   - Cursor: enable "Third-party skills" (Settings > Rules, Skills, Subagents) so it
     runs the hook from ~/.claude/settings.json.
-  - Machine-local skills: plain directories in $AGENTS_SKILLS.
+  - Machine-local shared skills: plain directories in $AGENTS_SKILLS.
+  - Harness-local skills: plain directories in each harness's own skills directory.
   - After adding hooks to hooks/*.json, re-run this script on each machine.
 MSG
     ;;
