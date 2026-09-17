@@ -37,12 +37,15 @@ description: Investigate a GitHub pull request with the GitHub CLI, summarize it
 - <feature added>
 - <other material change>
 
-## LOC by module
+## LOC by category
 
-| Module | Source (+ / -) | Tests (+ / -) | Docs (+ / -) | Total (+ / -) | Net |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| <module> | +40 / -10 | +20 / -5 | +8 / -2 | +68 / -17 | +51 |
-| **Total** | **+40 / -10** | **+20 / -5** | **+8 / -2** | **+68 / -17** | **+51** |
+| Category | Files | Added | Deleted | Net |
+| --- | ---: | ---: | ---: | ---: |
+| Code | 3 | 40 | 10 | +30 |
+| Tests | 2 | 20 | 5 | +15 |
+| Docs | 1 | 8 | 2 | +6 |
+| Other | 0 | 0 | 0 | 0 |
+| **Total** | **6** | **68** | **17** | **+51** |
 
 *LOC counts are added and deleted text lines in the PR diff, including blank lines and comments.*
 
@@ -59,12 +62,11 @@ Follow this output contract:
 - For the fallback body, use the level-two headings exactly as shown and in the same order.
 - Write `Summary` as a short paragraph describing the PR's overall outcome.
 - Write `Changes` as a flat bulleted list of material changes and features established by the diff. Group related edits, avoid path-by-path narration, and omit unsupported claims.
-- Replace file listings and file-by-file descriptions with the `LOC by module` table. Report diff line counts, not total file sizes or language-aware executable LOC; retain the counting note shown above.
-- Derive module boundaries from repository instructions, workspace manifests, and package or component structure. Group related source, tests, and docs under the same owning module even when they live in separate top-level directories. Use a consistent module level, with `Shared` for cross-module content and `Root` for repository-wide content; if no module boundaries exist, use `Root`. Briefly explain any non-obvious grouping assumption.
-- Assign each changed text file to exactly one category using repository conventions and purpose: `Source` for implementation code, `Tests` for tests and their dedicated fixtures, snapshots, and helpers, and `Docs` for documentation. Test fixtures take precedence over their file extension. If files such as build configuration, lockfiles, or generated assets do not fit those categories, add an `Other (+ / -)` column before `Total` and briefly state what it includes; do not silently drop them or inflate source counts.
+- Replace file listings and file-by-file descriptions with the `LOC by category` table. Report diff line counts, not total file sizes or language-aware executable LOC; retain the counting note shown above. If an existing body contains a `LOC by module` table from an earlier version of this format, replace that section with the `LOC by category` table.
+- Assign each changed text file to exactly one category using repository conventions and purpose: `Code` for implementation code, `Tests` for tests and their dedicated fixtures, snapshots, and helpers, `Docs` for documentation, and `Other` for everything else, such as build configuration, lockfiles, CI workflows, and generated assets. Test fixtures take precedence over their file extension. When `Other` is non-zero, briefly state what it includes below the table; do not silently drop files or inflate code counts.
 - Use per-file additions and deletions from the PR metadata or a complete machine-readable diff statistic. If local Git is needed, compare the PR base/head merge base to the PR head, not the working tree or the base tip. Check that the file data is complete, fetching all pages when necessary, and reconcile the sums with the PR's additions and deletions. Do not estimate counts from truncated patches; disclose unavailable counts or unresolved discrepancies instead of presenting partial totals as complete.
-- Attribute renames once to the destination module and category, counting only reported line changes; use the old path for deletions. Pure renames and mode-only changes contribute zero lines. Exclude binary content from LOC and note binary changes by module without listing files; never equate unavailable text statistics with zero.
-- Sort module rows lexicographically and end with a bold `Total` row. Show `+0 / -0` for empty categories, include modules with zero-line changes, sum every category into each row's `Total`, and calculate `Net` as additions minus deletions. Sum each column across modules for the final row. If there are no changed files, state `No changed files.` instead of rendering an empty table.
+- Count each changed text file once in `Files` under its assigned category. Attribute renames once to the destination category, counting only reported line changes; use the old path for deletions. Pure renames and mode-only changes count as one file with zero lines. Exclude binary content from the table and note binary changes by category without listing files; never equate unavailable text statistics with zero.
+- Always render the four rows in the order `Code`, `Tests`, `Docs`, `Other`, showing `0` for empty categories, and end with a bold `Total` row. Calculate `Net` as `Added` minus `Deleted`, and sum `Files`, `Added`, and `Deleted` across categories for the `Total` row. If there are no changed files, state `No changed files.` instead of rendering an empty table.
 - Write `Verification` as an unchecked task list using `- [ ]` for every item. Suggest relevant automated commands and manual checks from project instructions, manifests, CI configuration, and affected behavior. Do not mark an item complete or claim that a suggested check was executed.
 - Italicize the entire generation footer. Resolve the exact active model identifier from runtime or system metadata; never infer, shorten, or substitute a model family. Use `model identifier unavailable` rather than guessing when the exact identifier is unavailable. For a `gpt-5.6-sol` run, use `gpt-5.6-sol` exactly.
 - Include the full captured PR head SHA as `Reviewed commit` and the full captured PR base SHA as `Base commit` in the footer, including when using an existing body template. Replace the previous generation footer rather than accumulating checkpoints. Record only the snapshot actually reviewed, never the local checkout's HEAD or an unreviewed newer commit. These fields mark summary coverage, not approval of the code or successful test execution.
