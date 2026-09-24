@@ -153,10 +153,10 @@ test("with Codex, the server queues each browser message into the agent's sessio
     const state = await (await fetch(new URL("/api/state", s.url), { headers: { authorization: `Bearer ${s.token}` } })).json();
     assert.deepEqual(state.messages.map((m) => m.status), ["delivered", "delivered"]);
 
-    // Inside Codex's sandbox every command says how to get out of it.
-    const sandboxed = spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "status", "--dir", designDir], { env: { ...env, CODEX_SANDBOX_NETWORK_DISABLED: "1" }, encoding: "utf8" });
-    assert.notEqual(sandboxed.status, 0);
-    assert.match(sandboxed.stderr, /outside Codex's sandbox.*don't ask again/);
+    // Codex marks even approved (unsandboxed) commands with this variable, so
+    // it must not stop a command that can reach the server.
+    const approved = spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "status", "--dir", designDir], { env: { ...env, CODEX_SANDBOX_NETWORK_DISABLED: "1" }, encoding: "utf8" });
+    assert.equal(approved.status, 0, approved.stderr);
 
     // A new Codex session takes the design over.
     const again = spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "start", "--design", "cx", "--no-open"], { cwd: repo, env: { ...env, CODEX_THREAD_ID: "thread-456" }, encoding: "utf8" });
@@ -167,4 +167,14 @@ test("with Codex, the server queues each browser message into the agent's sessio
   } finally {
     run("stop", "--dir", designDir);
   }
+});
+
+test("inside Codex's sandbox, a server the command cannot see gets the way out", () => {
+  const designDir = join(mkdtempSync(join(tmpdir(), "mockup-sandboxed-")), ".design", "x");
+  mkdirSync(join(designDir, ".runtime"), { recursive: true });
+  // From inside the sandbox's own process namespace, the server's pid is not visible.
+  writeFileSync(join(designDir, ".runtime", "session.json"), JSON.stringify({ pid: 999999999, url: "http://127.0.0.1:9/", token: "t" }));
+  const run = (env) => spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "say", "--dir", designDir, "hi"], { env: { ...process.env, ...env }, encoding: "utf8" });
+  assert.match(run({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }).stderr, /outside Codex's sandbox.*don't ask again/);
+  assert.match(run({ CODEX_SANDBOX_NETWORK_DISABLED: "" }).stderr, /is not running/);
 });

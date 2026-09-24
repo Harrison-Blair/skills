@@ -98,12 +98,15 @@ Agents running the skill do not need this file; `SKILL.md` is the entry point.
 - Codex: the default workspace-write sandbox blocks listening and any socket
   connect (TCP or Unix, `EPERM`) and runs each command in its own process
   namespace, killing a server started there. So every `mockup` command runs
-  with escalated permissions (the user approves "don't ask again" once);
-  inside the sandbox (`CODEX_SANDBOX_NETWORK_DISABLED=1`) the CLI says so.
+  with escalated permissions (the user approves "don't ask again" once).
+  Codex keeps `CODEX_SANDBOX_NETWORK_DISABLED=1` even in approved commands
+  (seen live), so the CLI gives its sandbox hint only on a real failure: a
+  listen or connect `EPERM`, or a server pid it cannot see.
   The server wakes Codex with `codex queue --thread <id> --message <text>`,
   one message at a time; when Codex is busy, the queued message runs after
-  the current turn. Assumed, not verified: an approved command's environment
-  matches `-s danger-full-access` (no sandbox marker).
+  the current turn.
+- Live checks passed 2026-09-23 in real TUIs (herdr panes): a browser message
+  woke Codex (reply Done in 18s) and Pi (3s) with no terminal input.
 - Pi: nothing outside Pi can wake it, so `pi/mockup/index.ts` (linked by
   setup.sh) runs `mockup wait --for pi` in the background once
   `mockup start` leaves `~/.mockup/pi/<session>.json`, and hands each result

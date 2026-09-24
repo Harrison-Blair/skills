@@ -4,7 +4,7 @@ How to run the mockup loop in Codex.
 
 ## Run mockup outside the sandbox
 
-Codex's default sandbox turns networking off and tears down background processes when a command ends, so `mockup` cannot work inside it. Run every `mockup` command with escalated permissions, outside the sandbox. The first time, Codex asks the user in its terminal; ask them to approve "don't ask again" for commands starting with `mockup`, so the session is not interrupted again. If a `mockup` command says it has to run outside Codex's sandbox, run it again with escalated permissions.
+Codex's default sandbox turns networking off and tears down background processes when a command ends, so `mockup` cannot work inside it. Run every `mockup` command with escalated permissions, outside the sandbox. The first time, Codex asks the user in its terminal; ask them to approve "don't ask again" for commands starting with `mockup`, so the session is not interrupted again. If a `mockup` command says it has to run outside Codex's sandbox, run it again with escalated permissions. Codex leaves `CODEX_SANDBOX_NETWORK_DISABLED` set even for approved commands; that is expected, so do not unset it.
 
 Do not suggest turning the sandbox off in general.
 

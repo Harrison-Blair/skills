@@ -156,7 +156,7 @@ function findDesignDir(flags) {
 
 async function api(designDir, method, path, body) {
   const s = session(designDir);
-  if (!s || !alive(s.pid)) fail(`server for ${designDir} is not running; run \`mockup start\` again`, 2);
+  if (!s || !alive(s.pid)) fail(s && inCodex() ? SANDBOX_HINT : `server for ${designDir} is not running; run \`mockup start\` again`, 2);
   // node:http rather than fetch: fetch abandons any response slower than five
   // minutes, and `wait` must be able to block for hours.
   const { status, data } = await new Promise((ok) => {
@@ -238,7 +238,11 @@ async function start(flags) {
     if (s?.pid === child.pid || (exited && s && alive(s.pid))) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!s || !alive(s.pid)) fail(`server did not start; see ${join(designDir, ".runtime", "server.log")}`);
+  if (!s || !alive(s.pid)) {
+    const log = join(designDir, ".runtime", "server.log");
+    const denied = existsSync(log) && /listen EPERM/.test(readFileSync(log, "utf8"));
+    fail(denied ? SANDBOX_HINT : `server did not start; see ${log}`);
+  }
 
   if (harness === "pi" && s.pid === child.pid) {
     mkdirSync(dirname(piLink(thread)), { recursive: true });
@@ -326,12 +330,14 @@ async function stop(flags) {
 }
 
 // Inside Codex's sandbox the server can neither listen nor be reached, and
-// it would die with the command that started it.
+// it would die with the command that started it. Codex sets
+// CODEX_SANDBOX_NETWORK_DISABLED even for commands approved to run outside
+// the sandbox, so it only explains a failure; it is never a reason to stop.
+const inCodex = () => process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
 const SANDBOX_HINT = "mockup has to run outside Codex's sandbox. Run this command again with escalated permissions (outside the sandbox); when Codex asks, approve \"don't ask again\" for commands starting with `mockup`.";
 
 const [command, ...argv] = process.argv.slice(2);
 const { flags, rest } = parse(argv);
-if (process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1") fail(SANDBOX_HINT);
 const commands = { start, wait, say: (f) => say(f, rest), round: (f) => round(f, rest), status, stop };
 if (!commands[command]) fail("usage: mockup start|wait|say|round|status|stop (see the header of bin/mockup.mjs)");
 await commands[command](flags);
