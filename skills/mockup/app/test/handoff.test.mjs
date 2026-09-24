@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +56,9 @@ test("tokens.css becomes W3C design tokens: groups, types, aliases, dark values 
 });
 
 test("`mockup shot` pictures previews in light and dark, and `mockup handoff` bundles the approved design", { timeout: 240_000 }, async () => {
-  const repo = mkdtempSync(join(tmpdir(), "mockup-handoff-"));
+  // Real path: the CLI prints paths from its working directory, which macOS
+  // reports without the /var -> /private/var symlink.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mockup-handoff-")));
   const mockup = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: repo, encoding: "utf8", timeout: 120_000 });
   const started = mockup("start", "--design", "hand", "--no-open", "--harness", "claude");
   assert.equal(started.status, 0, started.stderr);

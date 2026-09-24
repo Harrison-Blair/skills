@@ -5,7 +5,7 @@
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const APP = fileURLToPath(new URL("..", import.meta.url));
@@ -69,10 +69,12 @@ const ASSETS = Object.fromEntries(
   [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".otf"].map((ext) => [ext, "dataurl"]),
 );
 
-// esbuild's messages, with paths relative to the design directory.
-function buildError(designDir, err) {
+// esbuild's messages. Builds run in the design directory's real path (esbuild
+// resolves symlinks, such as macOS's /var -> /private/var), so its file names
+// are already relative to it.
+function buildError(err) {
   const lines = (err.errors ?? []).map((e) => {
-    const at = e.location ? `${relative(designDir, e.location.file) || e.location.file}:${e.location.line}:${e.location.column}: ` : "";
+    const at = e.location ? `${e.location.file.split(sep).join("/")}:${e.location.line}:${e.location.column}: ` : "";
     return `${at}${e.text}`;
   });
   return new Error(lines.length ? lines.join("\n") : String(err.message ?? err));
@@ -91,6 +93,7 @@ export async function bundlePreview(designDir, rel) {
         sourcefile: "mockup-preview-entry.jsx",
         loader: "jsx",
       },
+      absWorkingDir: real(designDir),
       bundle: true,
       write: false,
       outdir: "out",
@@ -104,7 +107,7 @@ export async function bundlePreview(designDir, rel) {
       plugins: [confine(designDir)],
     });
   } catch (err) {
-    throw buildError(designDir, err);
+    throw buildError(err);
   }
   const out = (ext) => result.outputFiles.find((f) => f.path.endsWith(ext))?.text ?? "";
   // Inline, so the frame needs nothing else from the server.
@@ -129,7 +132,7 @@ export async function importedAssets(designDir, entries) {
   try {
     result = await build({
       entryPoints: entries.map((rel) => join(designDir, ...rel.split("/"))),
-      absWorkingDir: designDir,
+      absWorkingDir: real(designDir),
       bundle: true,
       write: false,
       outdir: "out",
@@ -141,7 +144,7 @@ export async function importedAssets(designDir, entries) {
       plugins: [confine(designDir)],
     });
   } catch (err) {
-    throw buildError(designDir, err);
+    throw buildError(err);
   }
   return Object.keys(result.metafile.inputs).map((p) => p.split(sep).join("/")).filter((p) => p.startsWith("assets/")).sort();
 }

@@ -365,6 +365,19 @@ async function stop(flags) {
   if (s && alive(s.pid)) {
     process.kill(s.pid, "SIGTERM");
     for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 50));
+    // On Windows the signal ends the server at once, before it can clean up;
+    // release what it still holds.
+    if (!alive(s.pid)) {
+      const runtime = join(designDir, ".runtime");
+      for (const file of ["server.lock", "session.json"]) {
+        try {
+          const text = readFileSync(join(runtime, file), "utf8");
+          if ((file === "server.lock" ? Number(text) : JSON.parse(text).pid) === s.pid) rmSync(join(runtime, file), { force: true });
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   }
   // The Pi extension stops listening once its link is gone.
   if (s?.harness === "pi" && s.thread) {

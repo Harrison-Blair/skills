@@ -3,10 +3,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXTENSION = join(APP, "..", "..", "..", "pi", "mockup", "index.ts");
@@ -36,14 +36,15 @@ const until = async (check, what) => {
 
 test("the Pi extension hands browser messages to the agent, once each, and stops with the session", async () => {
   const home = mkdtempSync(join(tmpdir(), "mockup-home-"));
-  const repo = mkdtempSync(join(tmpdir(), "mockup-pi-repo-"));
+  // Real path, as the CLI sees its working directory (macOS links /var).
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mockup-pi-repo-")));
   process.env.MOCKUP_HOME = home;
   const env = { ...process.env, MOCKUP_HOME: home, PI_SESSION_ID: "pi-session-1" };
   delete env.CODEX_THREAD_ID;
   const mockup = (...args) => spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), ...args], { cwd: repo, env, encoding: "utf8", timeout: 60_000 });
   const designDir = join(repo, ".design", "pi");
 
-  const { default: extension } = await import(EXTENSION);
+  const { default: extension } = await import(pathToFileURL(EXTENSION));
   const idle = { value: true };
   const pi = fakePi({ idle });
   extension(pi.api);

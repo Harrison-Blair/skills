@@ -363,7 +363,7 @@ test("a live preview can be clicked, resized, themed, and frozen for annotation"
   assert.ok(existsSync(render));
   await mockup(repo, "say", "Got it.");
   // The agent's copy has the pin drawn where it was placed.
-  const rel = render.slice(render.indexOf("renders/"));
+  const rel = render.slice(render.search(/renders[\\/]/)).split("\\").join("/");
   const red = await page.evaluate(async ({ rel, y }) => {
     const img = new Image();
     img.src = `/files/${rel}`;
