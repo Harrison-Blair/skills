@@ -73,3 +73,35 @@ jobs:
           python-version: '3.13'
       - name: Run native junction tests
         run: python -B -m unittest discover -s tests -p 'test_windows_setup.py' -v
+
+  mockup:
+    name: Mockup app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: skills/mockup/app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: skills/mockup/app/package-lock.json
+      # The CLI installs and builds the app on first start; doing it here keeps
+      # the parallel test files from reinstalling under each other.
+      - name: Install and build the app
+        run: |
+          node bin/mockup.mjs start --design ci --repo "$RUNNER_TEMP/mockup-ci" --no-open --harness claude
+          node bin/mockup.mjs stop --dir "$RUNNER_TEMP/mockup-ci/.design/ci"
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run tests
+        run: npm test

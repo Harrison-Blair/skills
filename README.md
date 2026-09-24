@@ -10,7 +10,7 @@ of truth for synced skills. Machine-local skills can live alongside its links.
 skills/<name>/SKILL.md   one skill per directory (see skills/agnostic-skill for conventions)
 hooks/claude.json        SessionStart entry merged into ~/.claude/settings.json
 hooks/codex.json         SessionStart entry merged into ~/.codex/hooks.json
-pi/skills-autopull/      Pi extension, linked into ~/.pi/agent/extensions
+pi/<name>/               Pi extensions (skills-autopull, mockup), linked into ~/.pi/agent/extensions
 scripts/setup.sh         one-time setup, and the --sync command the hooks run
 ```
 
@@ -62,7 +62,13 @@ absent:
   `~/.agents/skills` is automatically replaced with individual links without
   changing the shared contents. Unrelated directory links are left untouched
   with a warning.
-- Links the Pi extension into `~/.pi/agent/extensions/skills-autopull`.
+- Links each Pi extension in `pi/` into `~/.pi/agent/extensions/<name>`.
+- Writes a small wrapper into `~/.local/bin` for every command a skill ships in
+  `skills/<name>/bin/`, so agents in any harness run it by its bare name (for
+  example `mockup`). A file there that is not one of these wrappers, or a
+  wrapper for another clone that still exists, is left alone with a warning;
+  wrappers for commands removed from this clone are deleted. Setup warns when
+  `~/.local/bin` is not on `PATH`.
 - Merges one `SessionStart` hook into `~/.claude/settings.json` and
   `~/.codex/hooks.json`, next to whatever hooks are already there. The entries
   this repo manages are the ones running `scripts/setup.sh --sync`: the entry
@@ -100,7 +106,8 @@ Two manual steps remain:
 
 This reverses what setup installed for that clone and prints each removal: the
 skill links in `~/.agents/skills` that point into it, the links in
-`~/.claude/skills` that point at those, the Pi extension link, and the hook
+`~/.claude/skills` that point at those, the Pi extension link, the command
+wrappers in `~/.local/bin` that run its skills' commands, and the hook
 entries running that clone's `--sync`. It never removes a real directory, a
 link pointing anywhere else, a hook this repo did not write, or an entry for a
 different clone -- including a dead one, which belongs to whoever owns it. The

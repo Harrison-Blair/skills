@@ -19,6 +19,10 @@ set -u
 
 REPO_URL="https://github.com/Harrison-Blair/skills.git"
 AGENTS_SKILLS="$HOME/.agents/skills"
+# Wrappers for commands skills ship in skills/<name>/bin/, so every harness can
+# run them by the same bare name.
+BIN_DIR="$HOME/.local/bin"
+WRAPPER_MARK="# skills repo command:"
 # Directory holding this script's clone, empty when the script has no file to
 # sit next to: piped into a shell, $0 is the shell's own name and `dirname` of
 # it would silently point at whatever happens to be above the current directory.
@@ -195,10 +199,73 @@ link_claude_skills() {
   done
 }
 
+# Every folder under pi/ is a Pi extension, linked under its own name.
 link_pi() {
   [ -d "$HOME/.pi/agent" ] || { echo "skip: ~/.pi/agent not found (Pi)"; return 0; }
   mkdir -p "$HOME/.pi/agent/extensions"
-  link_dir "$HOME/.pi/agent/extensions/skills-autopull" "$REPO/pi/skills-autopull"
+  for ext in "$REPO"/pi/*/; do
+    [ -d "$ext" ] || continue
+    link_dir "$HOME/.pi/agent/extensions/$(basename "$ext")" "${ext%/}"
+  done
+}
+
+# wrapper_for TARGET: the shim written to $BIN_DIR for one skill command.
+wrapper_for() {
+  printf '#!/bin/sh\n%s %s\nexec "%s" "$@"\n' "$WRAPPER_MARK" "$1" "$1"
+}
+
+# wrapper_target FILE: the command a wrapper this repo wrote runs, else nothing.
+wrapper_target() {
+  [ -f "$1" ] && sed -n "2s|^$WRAPPER_MARK ||p" "$1"
+}
+
+# Put a wrapper on PATH for every skills/<name>/bin/<command>. A wrapper that
+# belongs to a clone that still exists, and any file that is not a wrapper, is
+# left alone with a warning. Wrappers whose command is gone from this clone go.
+link_commands() {
+  local target name dest current found=0
+  for target in "$REPO"/skills/*/bin/*; do
+    [ -f "$target" ] || continue
+    found=1
+    name="$(basename "$target")"
+    dest="$BIN_DIR/$name"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+      current="$(wrapper_target "$dest")"
+      if [ -z "$current" ]; then
+        echo "warn: $dest exists and is not a skills command wrapper; left untouched" >&2
+        continue
+      fi
+      if [ "$current" != "$target" ] && [ -e "$current" ]; then
+        echo "warn: $dest runs $current from another clone; left untouched" >&2
+        continue
+      fi
+      wrapper_for "$target" | cmp -s - "$dest" && continue
+    fi
+    mkdir -p "$BIN_DIR"
+    wrapper_for "$target" > "$dest.$$" && chmod 755 "$dest.$$" && mv -f "$dest.$$" "$dest"
+  done
+  remove_commands prune
+  if [ "$found" = 1 ]; then
+    case ":$PATH:" in
+      *":$BIN_DIR:"*) ;;
+      *) echo "warn: $BIN_DIR is not on PATH; add it so agents can run skill commands" >&2 ;;
+    esac
+  fi
+}
+
+# remove_commands prune|all: delete this clone's wrappers -- with prune, only
+# those whose command no longer exists.
+remove_commands() {
+  local f target
+  for f in "$BIN_DIR"/*; do
+    target="$(wrapper_target "$f")"
+    case "$target" in
+      "$REPO"/skills/*/bin/*) ;;
+      *) continue ;;
+    esac
+    [ "$1" = prune ] && [ -e "$target" ] && continue
+    rm -f "$f" && echo "removed: $f"
+  done
 }
 
 # The command hooks run at session start, with this machine's paths baked in.
@@ -622,6 +689,7 @@ reconcile() {
   link_skills
   link_claude_skills
   link_pi
+  link_commands
   apply_hooks merge
   return 0
 }
@@ -656,10 +724,14 @@ uninstall() {
       "$repo_skills"/*) unlink_dir "$d" && echo "removed: $d" ;;
     esac
   done
-  pi="$HOME/.pi/agent/extensions/skills-autopull"
-  if [ "$(link_target "$pi")" = "$(unix_path "$REPO/pi/skills-autopull")" ]; then
-    unlink_dir "$pi" && echo "removed: $pi"
-  fi
+  for ext in "$REPO"/pi/*/; do
+    [ -d "$ext" ] || continue
+    pi="$HOME/.pi/agent/extensions/$(basename "$ext")"
+    if [ "$(link_target "$pi")" = "$(unix_path "${ext%/}")" ]; then
+      unlink_dir "$pi" && echo "removed: $pi"
+    fi
+  done
+  remove_commands all
   apply_hooks remove
   echo "kept: the clone at $REPO, and every local skill and hook"
   return 0

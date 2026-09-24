@@ -1,0 +1,31 @@
+{
+  "name": "mockup-app",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "vite build client --outDir ../dist --emptyOutDir",
+    "dev": "vite client",
+    "test": "node --test --test-timeout=10000 \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "html-to-image": "^1.11.13",
+    "lucide-react": "^1.47.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-util-sanitize-uri": "^2.0.1",
+    "playwright": "^1.63.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.3.0"
+  }
+}
