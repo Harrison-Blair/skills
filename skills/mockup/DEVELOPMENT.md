@@ -90,18 +90,42 @@ Agents running the skill do not need this file; `SKILL.md` is the entry point.
   durability unit tests, Playwright end-to-end browser -> inbox -> wait. Each
   harness wake-up gets a manual fresh-session check in its provider reference.
 
+## Harness delivery (slice 2, verified 2026-09-23)
+
+- The harness and its session come from the environment it gives commands:
+  `CODEX_THREAD_ID` (Codex), `PI_SESSION_ID` (Pi); `--harness`/`--thread`
+  override. A different session running `mockup start` restarts the server.
+- Codex: the default workspace-write sandbox blocks listening and any socket
+  connect (TCP or Unix, `EPERM`) and runs each command in its own process
+  namespace, killing a server started there. So every `mockup` command runs
+  with escalated permissions (the user approves "don't ask again" once);
+  inside the sandbox (`CODEX_SANDBOX_NETWORK_DISABLED=1`) the CLI says so.
+  The server wakes Codex with `codex queue --thread <id> --message <text>`,
+  one message at a time; when Codex is busy, the queued message runs after
+  the current turn. Assumed, not verified: an approved command's environment
+  matches `-s danger-full-access` (no sandbox marker).
+- Pi: nothing outside Pi can wake it, so `pi/mockup/index.ts` (linked by
+  setup.sh) runs `mockup wait --for pi` in the background once
+  `mockup start` leaves `~/.mockup/pi/<session>.json`, and hands each result
+  to `pi.sendUserMessage` (followUp when busy). After its first wait it asks
+  only for new messages (`wait --new`), so an unanswered message is not
+  handed over twice; the first wait still redelivers after a restart.
+- `lib/format.mjs` renders messages for all three; only the closing line
+  differs (Claude: run `mockup wait` again; Codex/Pi: end your turn).
+
 ## Open items
 
-- How the server learns the Codex thread ID and the Pi session at launch.
 - Supported Node and browser versions.
 - Exact on-disk formats for rounds and approvals.
-- Codex queue delivery while the session is busy.
+- Fresh-session checks in real Codex and Pi TUIs (the provider references
+  list them); Windows delivery (`codex` resolution, `.cmd` shims) is untested.
 
 ## Build order
 
 1. Core loop: CLI (`start`, `wait`, `say`, `done`, `status`), server with
    security and durable inbox, React shell with chat and status, Claude path.
-2. Pi extension + setup linking; Codex queue adapter; provider references.
+2. Pi extension + setup linking; Codex queue adapter; provider references
+   (done).
 3. Rounds, approvals, stage gates; context and mood-board stages.
 4. Design language, component library, states & interactions, prototype
    (live previews: done).

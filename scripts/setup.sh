@@ -199,10 +199,14 @@ link_claude_skills() {
   done
 }
 
+# Every folder under pi/ is a Pi extension, linked under its own name.
 link_pi() {
   [ -d "$HOME/.pi/agent" ] || { echo "skip: ~/.pi/agent not found (Pi)"; return 0; }
   mkdir -p "$HOME/.pi/agent/extensions"
-  link_dir "$HOME/.pi/agent/extensions/skills-autopull" "$REPO/pi/skills-autopull"
+  for ext in "$REPO"/pi/*/; do
+    [ -d "$ext" ] || continue
+    link_dir "$HOME/.pi/agent/extensions/$(basename "$ext")" "${ext%/}"
+  done
 }
 
 # wrapper_for TARGET: the shim written to $BIN_DIR for one skill command.
@@ -720,10 +724,13 @@ uninstall() {
       "$repo_skills"/*) unlink_dir "$d" && echo "removed: $d" ;;
     esac
   done
-  pi="$HOME/.pi/agent/extensions/skills-autopull"
-  if [ "$(link_target "$pi")" = "$(unix_path "$REPO/pi/skills-autopull")" ]; then
-    unlink_dir "$pi" && echo "removed: $pi"
-  fi
+  for ext in "$REPO"/pi/*/; do
+    [ -d "$ext" ] || continue
+    pi="$HOME/.pi/agent/extensions/$(basename "$ext")"
+    if [ "$(link_target "$pi")" = "$(unix_path "${ext%/}")" ]; then
+      unlink_dir "$pi" && echo "removed: $pi"
+    fi
+  done
   remove_commands all
   apply_hooks remove
   echo "kept: the clone at $REPO, and every local skill and hook"

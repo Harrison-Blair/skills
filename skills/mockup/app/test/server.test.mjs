@@ -570,3 +570,14 @@ test("Markdown image paths are matched the way the page writes them, and ambiguo
   assert.equal(both.status, 400);
   assert.match(both.body.error, /same image path/);
 });
+
+test("a wait for new messages only skips ones already delivered", async () => {
+  await call("POST", "/api/messages", { body: { text: "first" } });
+  await call("GET", "/api/agent/wait?new=1");
+  // The first message is delivered but not finished; a new-only wait holds.
+  const waiting = call("GET", "/api/agent/wait?new=1");
+  const raced = await Promise.race([waiting.then(() => "returned"), new Promise((ok) => setTimeout(() => ok("waiting"), 300))]);
+  assert.equal(raced, "waiting");
+  await call("POST", "/api/messages", { body: { text: "second" } });
+  assert.deepEqual((await waiting).body.messages.map((m) => m.text), ["second"]);
+});

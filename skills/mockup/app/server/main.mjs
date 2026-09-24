@@ -5,6 +5,7 @@ import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writ
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "./server.mjs";
+import { codexDeliver } from "./deliver.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, arg, i, all) => (arg.startsWith("--") ? [...pairs, [arg.slice(2), all[i + 1]]] : pairs), []),
@@ -113,9 +114,13 @@ const releaseLock = () => {
 };
 process.on("exit", releaseLock);
 
-const app = createServer({
+// Codex is woken by the server; Claude and Pi listen with `mockup wait`.
+let app;
+const deliver = args.harness === "codex" && args.thread ? codexDeliver({ thread: args.thread, designDir, rounds: () => app.store.roundList() }) : null;
+app = createServer({
   designDir,
   token,
+  deliver,
   staticDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dist"),
 });
 const port = await app.listen(Number(args.port ?? 0));

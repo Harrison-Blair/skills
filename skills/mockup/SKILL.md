@@ -13,7 +13,7 @@ Run the `mockup` command. The skills repo's setup puts it on `PATH`. If it is no
 
 1. Pick the target repository: the current one, unless the user names another. If there is no repository yet, offer to create a folder and run `git init` there.
 2. Pick a design name: lowercase letters, digits and hyphens, for example `checkout-redesign`. Ask only if the user's request does not suggest one.
-3. Run `mockup start --design <name> --repo <repo> --harness <harness>`. `<harness>` is the tool you are running in: `claude`, `codex` or `pi`. The first run installs and builds the app, which takes a minute.
+3. Run `mockup start --design <name> --repo <repo>`. It detects Codex and Pi from their environment; pass `--harness claude|codex|pi` if it guesses wrong. The first run installs and builds the app, which takes a minute.
 4. The command opens the browser and prints an `open:` link and a `design dir:`. Tell the user the link in the terminal once, in case the browser did not open. That is the last thing you ask them to do in the terminal.
 5. Run every later `mockup` command from inside the target repository, or pass `--dir <design dir>` with the printed path. From anywhere else the commands cannot find the session.
 
@@ -24,12 +24,14 @@ Designs live in `<repo>/.design/<name>/`. `mockup start` writes `.design/.gitign
 The listening step differs per harness. Read your harness's reference before the first listen:
 
 - Claude Code: [references/providers/claude.md](references/providers/claude.md)
+- Codex: [references/providers/codex.md](references/providers/codex.md)
+- Pi: [references/providers/pi.md](references/providers/pi.md)
 
-Every turn follows the same shape:
+How a browser message reaches you depends on the harness: Claude Code listens with `mockup wait`, while Codex and Pi are woken without it (see their references). Every turn follows the same shape:
 
-1. Listen with `mockup wait`. It blocks, with no time limit, until the user sends something, so waiting costs nothing while they are away. Never add a timeout or poll. You receive every unfinished browser message, oldest first. A message marked `redelivered` reached you before an interruption; check `.design/<name>/` before redoing its work.
+1. Listen with `mockup wait` (Claude Code only). It blocks, with no time limit, until the user sends something, so waiting costs nothing while they are away. Never add a timeout or poll. You receive every unfinished browser message, oldest first. A message marked `redelivered` reached you before an interruption; check `.design/<name>/` before redoing its work.
 2. Do the work, then reply with `mockup say "<text>"`. A reply marks those messages done in the browser. Use `mockup say --progress "<text>"` for interim updates that should not close them, such as "Collecting reference images…". For long or multi-line text, pipe it: `mockup say -`.
-3. Listen again. Keep this loop running until the user ends the session.
+3. Listen again (Claude Code), or end your turn (Codex, Pi). Keep this loop going until the user ends the session.
 
 Write replies for the page, not the terminal. The chat renders Markdown. Keep replies short and concrete, and ask at most a few questions at a time.
 

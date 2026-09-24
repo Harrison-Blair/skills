@@ -2,7 +2,7 @@
 // mockup CLI: the agent's side of the browser loop.
 //
 //   mockup start --design NAME [--repo DIR] [--harness claude|codex|pi] [--thread ID] [--no-open]
-//   mockup wait  [--dir DESIGN_DIR] [--json]   (blocks until the user sends something; no time limit)
+//   mockup wait  [--dir DESIGN_DIR] [--json] [--for claude|pi]   (blocks until the user sends something; no time limit)
 //   mockup say   [--dir DESIGN_DIR] [--progress] TEXT...   (TEXT "-" reads stdin)
 //   mockup round [--dir DESIGN_DIR] --file ROUND.json [--stage S] [--title T] [--kind explore|draft]
 //   mockup round [--dir DESIGN_DIR] --stage S --title T [--kind K] MARKDOWN...   (MARKDOWN "-" reads stdin)
@@ -14,8 +14,10 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { format } from "../lib/format.mjs";
 
 const APP = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESIGN_GITIGNORE = `# mockup: runtime state and third-party images stay local
@@ -36,7 +38,7 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith("--")) rest.push(arg);
-    else if (["no-open", "json", "progress"].includes(arg.slice(2))) flags[arg.slice(2)] = true;
+    else if (["no-open", "json", "progress", "new"].includes(arg.slice(2))) flags[arg.slice(2)] = true;
     else flags[arg.slice(2)] = argv[++i];
   }
   return { flags, rest };
@@ -54,6 +56,7 @@ function hashFiles(paths) {
 }
 
 function walk(dir) {
+  if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)],
   ).sort();
@@ -66,7 +69,8 @@ function withInstallLock(fn) {
     try {
       mkdirSync(lock);
       break;
-    } catch {
+    } catch (err) {
+      if (err.code !== "EEXIST") fail(`cannot install the mockup app in ${APP} (${err.code}); run \`mockup start\` once where that folder is writable, for example outside a sandbox`);
       if (existsSync(lock) && Date.now() - statSync(lock).mtimeMs > 10 * 60 * 1000) rmSync(lock, { recursive: true, force: true });
       else if (Date.now() > deadline) fail(`another install holds ${lock}; remove it if no install is running`);
       else spawnSync(process.execPath, ["-e", "setTimeout(()=>{},500)"]);
@@ -93,18 +97,27 @@ function npm(args) {
 }
 
 function ensureApp() {
-  withInstallLock(() => {
-    const depsStamp = join(APP, "node_modules", ".mockup-deps");
+  const depsStamp = join(APP, "node_modules", ".mockup-deps");
+  const buildStamp = join(APP, "dist", ".mockup-build");
+  const stale = () => {
     const deps = hashFiles([join(APP, "package-lock.json")]);
-    if (!existsSync(depsStamp) || readFileSync(depsStamp, "utf8") !== deps) {
-      npm(["ci", "--no-audit", "--no-fund"]);
-      writeFileSync(depsStamp, deps);
-    }
-    const buildStamp = join(APP, "dist", ".mockup-build");
     const build = hashFiles([join(APP, "package-lock.json"), ...walk(join(APP, "client"))]);
-    if (!existsSync(buildStamp) || readFileSync(buildStamp, "utf8") !== build) {
+    const current = (stamp, hash) => existsSync(stamp) && readFileSync(stamp, "utf8") === hash;
+    return { deps, build, needDeps: !current(depsStamp, deps), needBuild: !current(buildStamp, build) };
+  };
+  // Nothing to do needs no lock, so a sandbox that cannot write here (Codex)
+  // can still start once the app is installed.
+  const first = stale();
+  if (!first.needDeps && !first.needBuild) return;
+  withInstallLock(() => {
+    const now = stale();
+    if (now.needDeps) {
+      npm(["ci", "--no-audit", "--no-fund"]);
+      writeFileSync(depsStamp, now.deps);
+    }
+    if (now.needBuild) {
       npm(["run", "build"]);
-      writeFileSync(buildStamp, build);
+      writeFileSync(buildStamp, now.build);
     }
   });
 }
@@ -161,7 +174,7 @@ async function api(designDir, method, path, body) {
         }
       });
     });
-    req.on("error", (err) => fail(`cannot reach the server at ${s.url}: ${err.code ?? err.message}`, 2));
+    req.on("error", (err) => fail(err.code === "EPERM" ? SANDBOX_HINT : `cannot reach the server at ${s.url}: ${err.code ?? err.message}`, 2));
     req.end(body ? JSON.stringify(body) : undefined);
   });
   if (status >= 400) fail(`${method} ${path}: ${data.error ?? status}`);
@@ -170,11 +183,18 @@ async function api(designDir, method, path, body) {
 
 // --- commands ---
 
+// Where the Pi extension looks for this session's mockup server.
+const piLink = (sessionId) => join(process.env.MOCKUP_HOME ?? join(homedir(), ".mockup"), "pi", `${sessionId}.json`);
+
 async function start(flags) {
   const name = flags.design;
   if (!name || !NAME.test(name)) fail("--design NAME is required (lowercase letters, digits, hyphens)");
-  const harness = flags.harness ?? "claude";
+  // The harness and its session come from the environment it gives commands,
+  // unless named.
+  const harness = flags.harness ?? (process.env.CODEX_THREAD_ID ? "codex" : process.env.PI_SESSION_ID ? "pi" : "claude");
   if (!["claude", "codex", "pi"].includes(harness)) fail(`unknown --harness ${harness}`);
+  const thread = flags.thread ?? { codex: process.env.CODEX_THREAD_ID, pi: process.env.PI_SESSION_ID }[harness] ?? null;
+  if (harness !== "claude" && !thread) fail(`--harness ${harness} needs its session: run inside ${harness}, or pass --thread ID`);
   const repo = resolve(flags.repo ?? process.cwd());
   const designRoot = join(repo, ".design");
   const designDir = join(designRoot, name);
@@ -183,9 +203,13 @@ async function start(flags) {
 
   const existing = session(designDir);
   if (existing && alive(existing.pid)) {
-    console.log(`already running: ${existing.url}?token=${existing.token}`);
-    console.log(`design dir: ${designDir}`);
-    return;
+    if (existing.harness === harness && (existing.thread ?? null) === thread) {
+      console.log(`already running: ${existing.url}?token=${existing.token}`);
+      console.log(`design dir: ${designDir}`);
+      return;
+    }
+    // A new agent session takes the design over; messages are kept on disk.
+    await stop({ dir: designDir, quiet: true });
   }
 
   ensureApp();
@@ -193,7 +217,7 @@ async function start(flags) {
   const token = randomBytes(32).toString("base64url");
   const log = openSync(join(designDir, ".runtime", "server.log"), "a");
   const args = [join(APP, "server", "main.mjs"), "--design-dir", designDir, "--harness", harness];
-  if (flags.thread) args.push("--thread", flags.thread);
+  if (thread) args.push("--thread", thread);
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ["ignore", log, log],
@@ -216,6 +240,11 @@ async function start(flags) {
   }
   if (!s || !alive(s.pid)) fail(`server did not start; see ${join(designDir, ".runtime", "server.log")}`);
 
+  if (harness === "pi" && s.pid === child.pid) {
+    mkdirSync(dirname(piLink(thread)), { recursive: true });
+    writeFileSync(piLink(thread), JSON.stringify({ designDir, node: process.execPath, cli: fileURLToPath(import.meta.url) }));
+  }
+
   const link = `${s.url}?token=${s.token}`;
   console.log(`open: ${link}`);
   console.log(`design dir: ${designDir}`);
@@ -234,77 +263,12 @@ function openBrowser(link) {
 
 // Titles for round items, so the agent reads "Calm paper", not an id.
 // The agent's own path for a published image copy, when the round has it.
-function originalOf(rounds, roundId, image) {
-  const round = rounds.find((r) => r.id === roundId);
-  for (const page of round?.pages ?? []) {
-    for (const b of page.blocks) {
-      if (b.src === image && b.from) return b.from;
-      const i = b.images?.indexOf(image) ?? -1;
-      if (i >= 0 && b.imagesFrom) return b.imagesFrom[i];
-    }
-  }
-  return null;
-}
-
-function itemLabel(rounds, roundId, itemId) {
-  if (itemId === "draft") return `the whole draft of ${roundId}`;
-  const round = rounds.find((r) => r.id === roundId);
-  for (const page of round?.pages ?? []) {
-    const b = page.blocks.find((x) => x.id === itemId);
-    if (b) return `${roundId}/${itemId} "${b.title ?? b.text ?? b.caption ?? b.src}"`;
-  }
-  return `${roundId}/${itemId}`;
-}
-
-const VERDICT = { like: "liked", dislike: "disliked", approve: "APPROVED", changes: "asked for changes to" };
-
-function format(messages, rounds, designDir) {
-  const abs = (rel) => join(designDir, ...rel.split("/"));
-  const lines = [`[mockup] ${messages.length} message(s) from the browser:`];
-  for (const m of messages) {
-    const about = m.round ? ` about round ${m.round}` : "";
-    lines.push(`--- #${m.seq} ${m.kind}${about}${m.redelivered ? " (redelivered: you may have handled this before a crash)" : ""}`);
-    if (m.text?.trim()) lines.push(m.text);
-    for (const d of m.decisions ?? []) {
-      if ("comment" in d) {
-        lines.push(d.comment.trim() ? `* commented on ${itemLabel(rounds, d.round, d.item)}: ${d.comment.trim()}` : `* deleted their comment on ${itemLabel(rounds, d.round, d.item)}`);
-        continue;
-      }
-      const verdict = Array.isArray(d.value)
-        ? d.value.length ? `chose ${d.value.map((v) => `"${v}"`).join(", ")} for` : "cleared their answers to"
-        : VERDICT[d.value] ?? `chose "${d.value}" for`;
-      lines.push(`* ${verdict} ${itemLabel(rounds, d.round, d.item)}`);
-    }
-    const a = m.attachments;
-    for (const sel of a?.selections ?? []) lines.push(`* selected ${itemLabel(rounds, sel.round, sel.item)}`);
-    for (const up of a?.uploads ?? []) lines.push(`* uploaded image: ${abs(up)}`);
-    for (const an of [...(a?.annotations ?? []), ...(m.annotations ?? [])]) {
-      const from = originalOf(rounds, an.round, an.image);
-      const what = an.item
-        ? `a snapshot of the live preview ${itemLabel(rounds, an.round, an.item)}, as the user saw it (${abs(an.image)})`
-        : `${abs(an.image)}${from ? ` (your ${from} as published in ${an.round})` : ""}`;
-      if (!an.marks.length) {
-        lines.push(`* removed their marks on ${what}`);
-        continue;
-      }
-      lines.push(`* marked up ${what}${an.render ? `; open ${abs(an.render)} to see the marks drawn on it` : ""}:`);
-      an.marks.forEach((mk, i) => {
-        const where = `${Math.round(mk.x * 100)}% across, ${Math.round(mk.y * 100)}% down`;
-        lines.push(`    ${i + 1}. ${mk.shape === "pin" ? "pin" : "circle"} at ${where}${mk.note ? `: ${mk.note}` : ""}`);
-      });
-    }
-    if (m.kind === "exit") lines.push("The user ended the session. Record any decisions above, reply with one short goodbye, run `mockup stop`, and stop listening.");
-  }
-  lines.push("--- open any image paths above with your image tool, reply with `mockup say`, then run `mockup wait` again.");
-  return lines.join("\n");
-}
-
 async function wait(flags) {
   const designDir = findDesignDir(flags);
-  const { messages } = await api(designDir, "GET", "/api/agent/wait");
+  const { messages } = await api(designDir, "GET", `/api/agent/wait${flags.new ? "?new=1" : ""}`);
   if (flags.json) return console.log(JSON.stringify(messages, null, 2));
   const { rounds } = await api(designDir, "GET", "/api/state");
-  console.log(format(messages, rounds, designDir));
+  console.log(format(messages, rounds, designDir, flags.for ?? "claude"));
 }
 
 const textArg = (rest) => (rest.length === 1 && rest[0] === "-" ? readFileSync(0, "utf8") : rest.join(" "));
@@ -350,11 +314,24 @@ async function stop(flags) {
     process.kill(s.pid, "SIGTERM");
     for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 50));
   }
-  console.log(`stopped ${designDir}`);
+  // The Pi extension stops listening once its link is gone.
+  if (s?.harness === "pi" && s.thread) {
+    try {
+      if (JSON.parse(readFileSync(piLink(s.thread), "utf8")).designDir === designDir) rmSync(piLink(s.thread), { force: true });
+    } catch {
+      // No link.
+    }
+  }
+  if (!flags.quiet) console.log(`stopped ${designDir}`);
 }
+
+// Inside Codex's sandbox the server can neither listen nor be reached, and
+// it would die with the command that started it.
+const SANDBOX_HINT = "mockup has to run outside Codex's sandbox. Run this command again with escalated permissions (outside the sandbox); when Codex asks, approve \"don't ask again\" for commands starting with `mockup`.";
 
 const [command, ...argv] = process.argv.slice(2);
 const { flags, rest } = parse(argv);
+if (process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1") fail(SANDBOX_HINT);
 const commands = { start, wait, say: (f) => say(f, rest), round: (f) => round(f, rest), status, stop };
 if (!commands[command]) fail("usage: mockup start|wait|say|round|status|stop (see the header of bin/mockup.mjs)");
 await commands[command](flags);

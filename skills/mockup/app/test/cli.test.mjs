@@ -12,7 +12,7 @@ const APP = join(dirname(fileURLToPath(import.meta.url)), "..");
 test("a failed install releases the install lock", () => {
   // A copy of the CLI whose lockfile makes `npm ci` fail immediately.
   const app = mkdtempSync(join(tmpdir(), "mockup-cli-"));
-  cpSync(join(APP, "bin"), join(app, "bin"), { recursive: true });
+  for (const dir of ["bin", "lib"]) cpSync(join(APP, dir), join(app, dir), { recursive: true });
   writeFileSync(join(app, "package.json"), '{"name":"x","private":true}');
   writeFileSync(join(app, "package-lock.json"), "not json");
   const repo = mkdtempSync(join(tmpdir(), "mockup-cli-repo-"));
@@ -112,5 +112,59 @@ test("a lock mutex held by a live process is never taken over, however old", asy
   } finally {
     holder.kill();
     server.kill();
+  }
+});
+
+// A stand-in `codex` on PATH that records how it was called.
+function fakeCodex() {
+  const dir = mkdtempSync(join(tmpdir(), "mockup-fake-codex-"));
+  const log = join(dir, "calls.jsonl");
+  writeFileSync(join(dir, "codex"), `#!${process.execPath}\nrequire("fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`, { mode: 0o755 });
+  return { dir, calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []) };
+}
+
+async function post(designDir, path, body) {
+  const s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
+  const res = await fetch(new URL(path, s.url), { method: "POST", headers: { authorization: `Bearer ${s.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  return res.json();
+}
+
+test("with Codex, the server queues each browser message into the agent's session", { skip: process.platform === "win32" }, async () => {
+  const codex = fakeCodex();
+  const repo = mkdtempSync(join(tmpdir(), "mockup-cli-repo-"));
+  const env = { ...process.env, PATH: codex.dir + (process.platform === "win32" ? ";" : ":") + process.env.PATH, CODEX_THREAD_ID: "thread-123" };
+  delete env.PI_SESSION_ID;
+  const run = (...args) => spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), ...args], { cwd: repo, env, encoding: "utf8", timeout: 60_000 });
+  const started = run("start", "--design", "cx", "--no-open");
+  const designDir = join(repo, ".design", "cx");
+  try {
+    assert.equal(started.status, 0, started.stderr);
+    const s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
+    assert.deepEqual([s.harness, s.thread], ["codex", "thread-123"], "harness and thread come from Codex's environment");
+    await post(designDir, "/api/messages", { text: "make it calmer" });
+    await post(designDir, "/api/messages", { text: "and bigger" });
+    for (let i = 0; i < 50 && codex.calls().length < 2; i++) await new Promise((ok) => setTimeout(ok, 100));
+    const calls = codex.calls();
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].slice(0, 4), ["queue", "--thread", "thread-123", "--message"]);
+    assert.match(calls[0][4], /make it calmer/);
+    assert.match(calls[1][4], /and bigger/, "in order");
+    assert.match(calls[0][4], /end your turn: the next browser message arrives on its own\. Do not run `mockup wait`/);
+    const state = await (await fetch(new URL("/api/state", s.url), { headers: { authorization: `Bearer ${s.token}` } })).json();
+    assert.deepEqual(state.messages.map((m) => m.status), ["delivered", "delivered"]);
+
+    // Inside Codex's sandbox every command says how to get out of it.
+    const sandboxed = spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "status", "--dir", designDir], { env: { ...env, CODEX_SANDBOX_NETWORK_DISABLED: "1" }, encoding: "utf8" });
+    assert.notEqual(sandboxed.status, 0);
+    assert.match(sandboxed.stderr, /outside Codex's sandbox.*don't ask again/);
+
+    // A new Codex session takes the design over.
+    const again = spawnSync(process.execPath, [join(APP, "bin", "mockup.mjs"), "start", "--design", "cx", "--no-open"], { cwd: repo, env: { ...env, CODEX_THREAD_ID: "thread-456" }, encoding: "utf8" });
+    assert.equal(again.status, 0, again.stderr);
+    const s2 = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
+    assert.equal(s2.thread, "thread-456");
+    assert.notEqual(s2.pid, s.pid);
+  } finally {
+    run("stop", "--dir", designDir);
   }
 });

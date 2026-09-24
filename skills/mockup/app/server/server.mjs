@@ -115,13 +115,17 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
     publishAgent();
   }
 
-  // Hand every pending message to one waiting `mockup wait`.
+  // Hand every pending message to one waiting `mockup wait`. A waiter that
+  // asked for new messages only (the Pi extension, which has already handed
+  // the delivered ones to the agent) is not given those again.
   function flush() {
     const pending = store.pending();
-    if (!pending.length || !waiters.size) return;
-    const waiter = waiters.values().next().value;
+    if (!pending.length) return;
+    const waiter = [...waiters].find((w) => !w.onlyNew || pending.some((m) => m.status === "queued"));
+    if (!waiter) return;
     waiters.delete(waiter);
-    const out = pending.map((m) => (m.status === "queued" ? store.setStatus(m.id, "delivered") : { ...m, redelivered: true }));
+    const give = waiter.onlyNew ? pending.filter((m) => m.status === "queued") : pending;
+    const out = give.map((m) => (m.status === "queued" ? store.setStatus(m.id, "delivered") : { ...m, redelivered: true }));
     for (const m of out) broadcast("message", m);
     touch();
     send(waiter.res, 200, { messages: out });
@@ -360,7 +364,7 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
       // Agent side: block until user messages are pending, then return them all.
       // There is deliberately no timeout: an idle wait costs the agent nothing.
       case "GET /api/agent/wait": {
-        const waiter = { res };
+        const waiter = { res, onlyNew: url.searchParams.get("new") === "1" };
         waiters.add(waiter);
         res.on("close", () => {
           if (waiters.delete(waiter)) publishAgent();

@@ -21,6 +21,7 @@ Keep portable instructions in the canonical `SKILL.md`. Never maintain synchroni
 3. Read only the references for those harnesses:
    - For Codex, read [references/providers/codex.md](references/providers/codex.md).
    - For Claude Code, read [references/providers/claude.md](references/providers/claude.md).
+   - For Pi, read [references/providers/pi.md](references/providers/pi.md).
    - For a provider without a reference, research its current official documentation and add a reference using the extension contract below before installing an adapter.
 4. Put provider-only metadata or behavior in provider-specific auxiliary files when the harness supports that separation. Do not leak it into the portable core.
 5. Validate the canonical skill, install only required discovery adapters, and test each harness in a fresh session when its reload behavior requires one.
