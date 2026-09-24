@@ -43,8 +43,10 @@ Agents running the skill do not need this file; `SKILL.md` is the entry point.
 - Rounds: one version + all feedback. Outputs immutable; feedback append-only;
   restore copies an old version forward as a new round; approvals reference
   exact versions; the agent is told the active version.
-- Visual input: Playwright screenshots after each round, read with the
-  harness's image tool.
+- Visual input: `mockup shot` opens each preview's frozen bundle in headless
+  Chromium (Playwright's, else installed Chrome/Edge, else a one-time
+  download) under the preview CSP, full page, light and dark, and reports page
+  errors. The agent reads the PNGs with its image tool.
 - Components: real React, one reusable file per component, token-styled.
 - Live previews: the agent writes `ui/tokens.css`, `ui/components/*.jsx` (one
   per file, composed as the real app would) and `ui/pages/*.jsx`. Publishing a
@@ -86,6 +88,10 @@ Agents running the skill do not need this file; `SKILL.md` is the entry point.
 - Handoff: brief, final collage, W3C design tokens + CSS variables, component
   files, state grids and flow diagrams, open decisions, and a mapping guide to
   the target framework. Approval does not authorize production code changes.
+  `mockup handoff` generates `handoff/` (README, decisions.md, brief.md,
+  tokens.json from `ui/tokens.css`, a copy of `ui/` plus only the assets it
+  imports, symlinks skipped, and shots of each stage's latest approved draft);
+  the agent writes `handoff/GUIDE.md`, which reruns keep.
 - Tests: Node CI job on Linux, macOS, Windows (Git Bash): server, security and
   durability unit tests, Playwright end-to-end browser -> inbox -> wait. Each
   harness wake-up gets a manual fresh-session check in its provider reference.
@@ -132,4 +138,4 @@ Agents running the skill do not need this file; `SKILL.md` is the entry point.
 3. Rounds, approvals, stage gates; context and mood-board stages.
 4. Design language, component library, states & interactions, prototype
    (live previews: done).
-5. Playwright screenshots, handoff export, CI jobs.
+5. Playwright screenshots, handoff export, CI jobs (done).

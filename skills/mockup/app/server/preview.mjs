@@ -69,6 +69,15 @@ const ASSETS = Object.fromEntries(
   [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".otf"].map((ext) => [ext, "dataurl"]),
 );
 
+// esbuild's messages, with paths relative to the design directory.
+function buildError(designDir, err) {
+  const lines = (err.errors ?? []).map((e) => {
+    const at = e.location ? `${relative(designDir, e.location.file) || e.location.file}:${e.location.line}:${e.location.column}: ` : "";
+    return `${at}${e.text}`;
+  });
+  return new Error(lines.length ? lines.join("\n") : String(err.message ?? err));
+}
+
 // Builds ui/<page> into renders/previews/<hash>.html and returns the hash.
 // Throws with esbuild's messages, paths relative to the design directory.
 export async function bundlePreview(designDir, rel) {
@@ -95,11 +104,7 @@ export async function bundlePreview(designDir, rel) {
       plugins: [confine(designDir)],
     });
   } catch (err) {
-    const lines = (err.errors ?? []).map((e) => {
-      const at = e.location ? `${relative(designDir, e.location.file) || e.location.file}:${e.location.line}:${e.location.column}: ` : "";
-      return `${at}${e.text}`;
-    });
-    throw new Error(lines.length ? lines.join("\n") : String(err.message ?? err));
+    throw buildError(designDir, err);
   }
   const out = (ext) => result.outputFiles.find((f) => f.path.endsWith(ext))?.text ?? "";
   // Inline, so the frame needs nothing else from the server.
@@ -113,4 +118,30 @@ export async function bundlePreview(designDir, rel) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${hash}.html`), html);
   return hash;
+}
+
+// The files under assets/ that the given ui/ files import, directly or
+// through each other, as paths relative to the design directory. Builds them
+// under the same rules as a preview, so this fails where publishing would.
+export async function importedAssets(designDir, entries) {
+  if (!entries.length) return [];
+  let result;
+  try {
+    result = await build({
+      entryPoints: entries.map((rel) => join(designDir, ...rel.split("/"))),
+      absWorkingDir: designDir,
+      bundle: true,
+      write: false,
+      outdir: "out",
+      metafile: true,
+      platform: "browser",
+      jsx: "automatic",
+      loader: { ".js": "jsx", ...ASSETS },
+      logLevel: "silent",
+      plugins: [confine(designDir)],
+    });
+  } catch (err) {
+    throw buildError(designDir, err);
+  }
+  return Object.keys(result.metafile.inputs).map((p) => p.split(sep).join("/")).filter((p) => p.startsWith("assets/")).sort();
 }

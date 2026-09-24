@@ -58,9 +58,9 @@ Guide the user through these stages in order. Get explicit approval before movin
 4. **Component library.** Build every component the brief's screens need in `ui/components/`, one reusable file each, styled only from the tokens, and composed the way the real app would use them. Show each one in every state on live preview pages.
 5. **States and interactions.** For each flow in the brief, show every state change live, including loading, empty, error, disabled and focus.
 6. **Prototype.** Build the key screens in `ui/pages/` from the same components, clickable end to end, and publish them as previews with a device frame. The user plays with it and marks up what to change; edit the components or screens and publish a new round each time.
-7. **Handoff.** Bundle what an implementer needs: the tokens, the component files, and a guide mapping them to the app. List any decisions still open.
+7. **Handoff.** Run `mockup handoff`. It fills `.design/<name>/handoff/` with the component files, `tokens.json` (W3C design tokens), screenshots of each stage's approved previews, the brief and a decisions list, and names any stage not yet approved. Then write `handoff/GUIDE.md` yourself: how each token and component maps onto the app's framework and styling, which existing code each would replace, and the decisions still open. Publish the guide as a `handoff` draft round. Run `mockup handoff` again after any later change; it keeps your `GUIDE.md`.
 
-Live previews are described in [references/rounds.md](references/rounds.md#live-previews).
+Live previews are described in [references/rounds.md](references/rounds.md#live-previews). After publishing a round with previews, run `mockup shot` and open the screenshots it prints with your image tool before you point the user at the round. It shoots each preview in light and dark and lists any error the page threw; fix those first.
 
 Approving the design never authorizes changes to the application's production code. Ask separately before implementing anything.
 

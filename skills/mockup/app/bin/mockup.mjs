@@ -6,6 +6,8 @@
 //   mockup say   [--dir DESIGN_DIR] [--progress] TEXT...   (TEXT "-" reads stdin)
 //   mockup round [--dir DESIGN_DIR] --file ROUND.json [--stage S] [--title T] [--kind explore|draft]
 //   mockup round [--dir DESIGN_DIR] --stage S --title T [--kind K] MARKDOWN...   (MARKDOWN "-" reads stdin)
+//   mockup shot  [--dir DESIGN_DIR] [--round ID] [--item ID] [--device phone|tablet|desktop] [--theme light|dark]
+//   mockup handoff [--dir DESIGN_DIR]
 //   mockup status [--dir DESIGN_DIR]
 //   mockup stop  [--dir DESIGN_DIR]
 import { spawn, spawnSync } from "node:child_process";
@@ -301,6 +303,52 @@ async function round(flags, rest) {
   console.log(`published round ${r.id}`);
 }
 
+// Screenshots of a round's live previews (the latest round that has any,
+// unless named), so the agent can look at what it built.
+async function shot(flags) {
+  // Loaded here: the app's packages are installed only once `start` has run.
+  const { SIZES, THEMES, previewsOf, shoot } = await import("../lib/shots.mjs");
+  const designDir = findDesignDir(flags);
+  if (flags.device && !SIZES[flags.device]) fail(`--device must be one of ${Object.keys(SIZES).join(", ")}`);
+  if (flags.theme && !THEMES.includes(flags.theme)) fail(`--theme must be one of ${THEMES.join(", ")}`);
+  const { rounds } = await api(designDir, "GET", "/api/state");
+  const round = flags.round ? rounds.find((r) => r.id === flags.round) : rounds.filter((r) => previewsOf(r).length).at(-1);
+  if (!round) fail(flags.round ? `no round ${flags.round}` : "no round has a live preview yet");
+  const previews = previewsOf(round, flags.item);
+  if (!previews.length) fail(flags.item ? `${round.id} has no preview ${flags.item}` : `${round.id} has no live previews`);
+  const shots = await shoot(designDir, previews, {
+    outDir: join(designDir, "renders", "shots", round.id),
+    devices: flags.device ? [flags.device] : undefined,
+    themes: flags.theme ? [flags.theme] : THEMES,
+  });
+  printShots(shots);
+}
+
+function printShots(shots) {
+  for (const s of shots) {
+    console.log(s.path);
+    for (const e of s.errors) console.log(`  page error: ${e}`);
+  }
+}
+
+async function handoff(flags) {
+  const { GUIDE, handoff: buildHandoff } = await import("../lib/handoff.mjs");
+  const designDir = findDesignDir(flags);
+  const { rounds, decisions } = await api(designDir, "GET", "/api/state");
+  let result;
+  try {
+    result = await buildHandoff(designDir, { rounds, decisions });
+  } catch (err) {
+    fail(`handoff: ${err.message}`);
+  }
+  console.log(`handoff: ${result.dir}`);
+  console.log(`wrote ${result.written.join(", ")}`);
+  printShots(result.shots);
+  console.log(result.guide
+    ? `${GUIDE} is kept as you wrote it; update it if the design changed.`
+    : `Now write ${join(result.dir, GUIDE)}: how to build each token and component into this app's framework and styling, which existing code each replaces, and the decisions still open. Then publish it as a handoff draft round.`);
+}
+
 async function status(flags) {
   const designDir = findDesignDir(flags);
   const s = session(designDir);
@@ -338,6 +386,6 @@ const SANDBOX_HINT = "mockup has to run outside Codex's sandbox. Run this comman
 
 const [command, ...argv] = process.argv.slice(2);
 const { flags, rest } = parse(argv);
-const commands = { start, wait, say: (f) => say(f, rest), round: (f) => round(f, rest), status, stop };
-if (!commands[command]) fail("usage: mockup start|wait|say|round|status|stop (see the header of bin/mockup.mjs)");
+const commands = { start, wait, say: (f) => say(f, rest), round: (f) => round(f, rest), shot, handoff, status, stop };
+if (!commands[command]) fail("usage: mockup start|wait|say|round|shot|handoff|status|stop (see the header of bin/mockup.mjs)");
 await commands[command](flags);

@@ -67,6 +67,7 @@ Design language, components, states and the prototype are shown as live UI, buil
 - Publishing builds each preview and fails with the file, line and error if it does not build. A published round keeps the build it had, so edit the files and publish a new round to show a revision.
 - Previews run sandboxed, with no access to the network except fonts, styles and images over HTTPS. Show interactions for real: hover, focus, pressed, open menus, form errors, loading and empty states.
 - When the user marks up a preview, you get a picture of exactly what they saw, with their marks drawn on.
+- `mockup shot` pictures the latest round's previews, whole page, at each block's device (`fit` is shot at desktop width) in light and dark, into `renders/shots/<round>/<item>.<device>.<theme>.png`, and lists any error a page threw. Narrow it with `--round`, `--item`, `--device phone|tablet|desktop` and `--theme light|dark`. The first run may download Chromium once if no Chrome is installed.
 
 ## Shorthand
 
