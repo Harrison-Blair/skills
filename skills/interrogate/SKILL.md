@@ -19,6 +19,8 @@ When an **experiment** could clarify a detail or test an idea, offer it with its
 
 **Illustrate when it helps.** When a question involves a flow, a relationship, a data model, or a comparison between shapes of a solution, draw it as a small terminal-friendly diagram inside a fenced code block: boxes and arrows, a tree, a short table, or a timeline. Keep each diagram under about fifteen lines and label every box. Skip the diagram when words alone are clearer.
 
+**Give context for the decision.** Include a Reasoning section before Answers in every question, after Picture when present. Explain why the question matters to the user's goal, how the relevant facts affect the choice, and the main tradeoffs or practical consequences. Identify assumptions or uncertainty that could change the choice. Give enough context for the user to judge the options without prior technical knowledge; scale the detail to the decision rather than merely repeating the question or recommendation.
+
 **Offer every viable answer.** List each option that is genuinely workable, not just two. Put the recommended option first, mark it `(recommended)`, and give one or two sentences on why. Give each alternative one sentence on when it would be the better choice. Always include a recommendation, even for open-ended questions. The user may answer with their own option instead of choosing from the list.
 
 Use the following structure flexibly. Number questions within each round. Include sourced facts when useful and omit empty sections.
@@ -31,6 +33,9 @@ Facts:
 
 Picture:
   {optional diagram, table, or tree}
+
+Reasoning:
+{Why this decision matters, how the facts affect it, and the tradeoffs or consequences the user needs to weigh. Note relevant assumptions or uncertainty.}
 
 Answers:
 - {Option} (recommended) -- {Why, in plain words}
@@ -53,6 +58,9 @@ Picture:
   ~/other/skills/.sync.lock       ^
        ^          ^               |
      sync A     sync B      sync A + sync B
+
+Reasoning:
+A lock prevents two syncs from changing the same files at once. Its location determines which syncs must wait for each other. A lock in each clone lets separate clones sync at the same time; a global lock makes all clones take turns. The choice depends on whether those clones modify shared files: if they do, separate locks may leave conflicts unprotected. Without a lock, the sync process would need a reliable way to detect and recover from conflicts.
 
 Answers:
 - Per clone (recommended) -- matches where the lock is now and keeps clones independent
