@@ -1,0 +1,4 @@
+#!/bin/sh
+# The mockup CLI. scripts/setup.sh puts a wrapper for this on PATH.
+here="$(cd "$(dirname "$0")" && pwd -P)"
+exec node "$here/../app/bin/mockup.mjs" "$@"

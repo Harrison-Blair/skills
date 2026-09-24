@@ -51,6 +51,14 @@ class ValidatorTests(unittest.TestCase):
         self.assertIn("Missing required file: SKILL.md", result.stdout)
         self.assertIn("missing local target 'docs/nope.md'", result.stdout)
 
+    def test_installed_dependencies_are_skipped(self):
+        self.write("skills/good/app/node_modules/pkg/README.md", "[gone](missing.md)\n")
+        self.write("skills/good/app/node_modules/pkg/x.yaml", "- not a mapping\n")
+        self.write("skills/good/app/notes.md", "[gone](missing.md)\n")
+        result = self.run_validator()
+        self.assertNotIn("node_modules", result.stdout)
+        self.assertIn("skills/good/app/notes.md: missing local target", result.stdout)
+
     def test_invalid_frontmatter_is_reported(self):
         self.write("skills/good/SKILL.md", """---\nname: Bad Name\ndescription: nope\n---\n""")
         result = self.run_validator()

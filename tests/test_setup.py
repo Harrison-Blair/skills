@@ -357,6 +357,55 @@ class SetupTests(unittest.TestCase):
         self.assert_shared_link()
         self.assertFalse(lock.exists())
 
+    def add_command(self, skill, name, output):
+        target = skill / "bin" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/bin/sh\necho %s \"$@\"\n" % output)
+        target.chmod(0o755)
+        return target
+
+    def test_skill_commands_get_wrappers_on_path(self):
+        self.add_command(self.skill, "hello", "hi")
+        bin_dir = self.home / ".local/bin"
+        result = self.run_setup()
+        wrapper = bin_dir / "hello"
+        run = subprocess.run([str(wrapper), "there"], text=True, capture_output=True)
+        self.assertEqual(run.stdout, "hi there\n")
+        self.assertIn("not on PATH", result.stderr)
+        before = wrapper.stat().st_mtime_ns
+        self.run_setup("--sync")
+        self.assertEqual(wrapper.stat().st_mtime_ns, before, "unchanged wrappers are not rewritten")
+
+    def test_foreign_files_and_live_clones_keep_their_command_names(self):
+        bin_dir = self.home / ".local/bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "mine").write_text("#!/bin/sh\necho local\n")
+        other = self.add_command(self.add_skill(self.base / "other/skills/x"), "theirs", "other")
+        (bin_dir / "theirs").write_text("#!/bin/sh\n# skills repo command: %s\nexec \"%s\" \"$@\"\n" % (other, other))
+        (bin_dir / "stale").write_text("#!/bin/sh\n# skills repo command: /gone/skills/x/bin/stale\nexec /gone \"$@\"\n")
+        for name in ("mine", "theirs", "stale"):
+            self.add_command(self.skill, name, "ours")
+        result = self.run_setup()
+        self.assertEqual((bin_dir / "mine").read_text(), "#!/bin/sh\necho local\n")
+        self.assertIn(str(other), (bin_dir / "theirs").read_text())
+        self.assertIn(str(self.repo), (bin_dir / "stale").read_text(), "a dead clone's wrapper is taken over")
+        self.assertIn("mine exists and is not a skills command wrapper", result.stderr)
+        self.assertIn("from another clone", result.stderr)
+
+    def test_removed_commands_are_pruned_and_uninstall_removes_the_rest(self):
+        gone = self.add_command(self.skill, "gone", "x")
+        self.add_command(self.skill, "kept", "y")
+        bin_dir = self.home / ".local/bin"
+        self.run_setup()
+        (bin_dir / "unrelated").write_text("#!/bin/sh\n")
+        gone.unlink()
+        self.run_setup("--sync")
+        self.assertFalse((bin_dir / "gone").exists())
+        self.assertTrue((bin_dir / "kept").exists())
+        self.run_setup("--uninstall")
+        self.assertFalse((bin_dir / "kept").exists())
+        self.assertTrue((bin_dir / "unrelated").exists())
+
     def test_uninstall_removes_only_what_setup_installed(self):
         (self.home / ".codex").mkdir()
         extensions = self.home / ".pi/agent/extensions"

@@ -20,10 +20,21 @@ def _iter_tokens(tokens):
             yield from _iter_tokens(token.children)
 
 
+# Installed dependencies (a skill's bundled app) are not skill content.
+SKIPPED_DIRS = {"node_modules"}
+
+
+def skill_files(root: Path, pattern: str) -> list[Path]:
+    return sorted(
+        path for path in (root / "skills").rglob(pattern)
+        if not SKIPPED_DIRS.intersection(path.relative_to(root).parts)
+    )
+
+
 def check_markdown_links(root: Path) -> list[str]:
     """Return errors for local links/images whose destinations do not exist."""
     errors: list[str] = []
-    markdown_files = [root / "README.md", *sorted((root / "skills").rglob("*.md"))]
+    markdown_files = [root / "README.md", *skill_files(root, "*.md")]
     parser = MarkdownIt()
     for markdown_file in markdown_files:
         if not markdown_file.is_file():
@@ -71,8 +82,8 @@ def check_json_files(root: Path) -> list[str]:
 
 def check_yaml_files(root: Path) -> list[str]:
     errors: list[str] = []
-    paths = list((root / "skills").rglob("*.yaml"))
-    paths += list((root / "skills").rglob("*.yml"))
+    paths = skill_files(root, "*.yaml")
+    paths += skill_files(root, "*.yml")
     paths += list((root / ".github/workflows").glob("*.yaml"))
     paths += list((root / ".github/workflows").glob("*.yml"))
     for path in sorted(paths):
