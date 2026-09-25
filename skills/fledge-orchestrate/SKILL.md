@@ -40,3 +40,10 @@ Commands change between Fledge versions. Before first use, read `fledge agent --
 - Spawn prompts start with a sender header, so ask a worker in plain words to use a skill; a leading slash command will not run. Pass absolute paths to `--cwd`.
 - Stop only the workers you spawned, after their results and any verification are read.
 - When Fledge fails or lacks a capability, fall back to the harness tool for that step, tell the user, and record the friction where the repository asks for it.
+- When a worker runs on Codex, put the escalation rule from the [Codex note](references/providers/codex.md) in its brief.
+
+## Harness notes
+
+Read only the note for the current harness:
+
+- [Codex](references/providers/codex.md): request sandbox escalation for Fledge commands before running them.
