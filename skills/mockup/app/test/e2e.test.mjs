@@ -682,10 +682,20 @@ test("sending right after a mark draws the agent's copy with that mark", { timeo
 });
 
 test("marks from another tab arrive even while this tab's save is slow", { timeout: 60_000 }, async () => {
+  const designDir = join(repo, ".design", "e2e");
+  mkdirSync(join(designDir, "assets", "web"), { recursive: true });
+  writeFileSync(join(designDir, "assets", "web", "tab-sync.png"), PNG_1PX);
+  writeFileSync(join(repo, "tab-sync.json"), JSON.stringify({
+    stage: "mood", title: "Cross tab marks", kind: "explore",
+    pages: [{ title: "Looks", blocks: [
+      { type: "option", id: "calm", title: "Calm paper", images: ["assets/web/tab-sync.png"] },
+    ] }],
+  }));
+  await mockup(repo, "round", "--file", "tab-sync.json");
   const [mine, theirs] = [await browser.newPage(), await browser.newPage()];
   for (const p of [mine, theirs]) {
     await p.goto(link);
-    await p.getByRole("button", { name: /Taste check/ }).click();
+    await p.getByRole("button", { name: /Cross tab marks/ }).click();
   }
   const card = (p) => p.locator("article.option", { hasText: "Calm paper" });
   const place = async (p, x, y) => {
@@ -698,27 +708,40 @@ test("marks from another tab arrive even while this tab's save is slow", { timeo
     await card(p).getByRole("button", { name: "Pin" }).click();
   };
   const before = await card(mine).locator(".pin").count();
-  // My save is stored at once, but its answer is held back.
+  assert.equal(await card(theirs).locator(".pin").count(), before);
+  // Wait until the server has stored my mark, but hold its answer back.
+  let stored;
+  const storedOnServer = new Promise((ok) => (stored = ok));
   let release;
   const held = new Promise((ok) => (release = ok));
   await mine.route("**/api/annotations", async (route) => {
     const response = await route.fetch();
+    stored();
     await held;
     await route.fulfill({ response });
   });
-  await place(mine, 0.1, 0.3);
-  await place(theirs, 0.3, 0.3);
-  await card(theirs).locator(".pin").nth(before + 1).waitFor();
-  release();
-  await card(mine).locator(".pin").nth(before + 1).waitFor({ timeout: 5000 });
-  await mine.unroute("**/api/annotations");
-  // A new pin here must not drop the other tab's pin.
-  await place(mine, 0.5, 0.3);
-  await mine.waitForTimeout(500);
-  await mine.reload();
-  await mine.getByRole("button", { name: /Taste check/ }).click();
-  await card(mine).locator(".pin").nth(before + 2).waitFor();
-  assert.equal(await card(mine).locator(".pin").count(), before + 3);
+  try {
+    await place(mine, 0.1, 0.3);
+    await storedOnServer;
+    // Do not let the second edit race the first server write. This also proves
+    // the other tab receives the update while the first response is still held.
+    await card(theirs).locator(".pin").nth(before).waitFor();
+    await place(theirs, 0.3, 0.3);
+    await card(theirs).locator(".pin").nth(before + 1).waitFor();
+    release();
+    await card(mine).locator(".pin").nth(before + 1).waitFor({ timeout: 5000 });
+    await mine.unroute("**/api/annotations");
+    // A new pin here must not drop the other tab's pin.
+    await place(mine, 0.5, 0.3);
+    await mine.waitForTimeout(500);
+    await mine.reload();
+    await mine.getByRole("button", { name: /Cross tab marks/ }).click();
+    await card(mine).locator(".pin").nth(before + 2).waitFor();
+    assert.equal(await card(mine).locator(".pin").count(), before + 3);
+  } finally {
+    release();
+    await mine.unroute("**/api/annotations");
+  }
 });
 
 test("marking pauses while a message is being sent", { timeout: 60_000 }, async () => {
