@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Md, Attachments, STATUS_LABEL, plain } from "./common.jsx";
+import { fileUrl } from "./session.js";
 import { Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, Flag, CircleDashed, CircleDot, Clock, Loader2, MessageSquare, MessageSquareText, PencilLine, ThumbsDown, ThumbsUp } from "lucide-react";
 import { SavedMarks } from "./Annotate.jsx";
 import { LivePreview } from "./Preview.jsx";
@@ -65,36 +66,100 @@ function CommentBox({ round, itemId, comment, onDecide, disabled }) {
 
 const VERDICT_LABEL = { like: "Liked", dislike: "Not for me", approve: "Draft approved", changes: "Changes requested" };
 
-// A question's choices as rows: radio buttons, or checkboxes when several
-// answers are allowed.
+const choiceLabel = (c) => (typeof c === "string" ? c : c.label);
+
+// A question's choices: radio buttons, or checkboxes when several answers are
+// allowed. Plain choices are full-width rows; choices with text or images are
+// cards, `columns` to a row, for comparing. With `other`, the user can write
+// their own answer, which is sent as that text.
 function Choices({ round, item, decision, onDecide, disabled }) {
   const name = `${round.id}-${item.id}`;
+  const labels = item.choices.map(choiceLabel);
   // Local first, so a click shows at once and quick clicks build on each
   // other rather than on a server echo that has not arrived yet.
   const saved = item.multiple ? decision?.value ?? [] : decision ? [decision.value] : [];
   const [picked, setPicked] = useState(saved);
-  useEffect(() => setPicked(saved), [decision?.id]);
+  const savedOther = saved.find((v) => !labels.includes(v));
+  const [otherOn, setOtherOn] = useState(savedOther !== undefined);
+  const [otherText, setOtherText] = useState(savedOther ?? "");
+  useEffect(() => {
+    setPicked(saved);
+    setOtherOn(savedOther !== undefined);
+    setOtherText(savedOther ?? "");
+  }, [decision?.id]);
   const choose = (next) => {
     setPicked(next);
     onDecide({ round: round.id, item: item.id, value: item.multiple ? next : next[0] });
   };
+  const chosen = picked.filter((p) => labels.includes(p));
+  const written = otherText.trim();
+  const toggle = (c, on) => {
+    if (!item.multiple) {
+      setOtherOn(false);
+      return choose([c]);
+    }
+    const next = labels.filter((x) => (x === c ? !on : chosen.includes(x)));
+    choose(otherOn && written ? [...next, written] : next);
+  };
+  const toggleOther = () => {
+    const on = !otherOn;
+    setOtherOn(on);
+    if (item.multiple) {
+      if (written) choose(on ? [...chosen, written] : chosen);
+    } else if (on) {
+      if (written) choose([written]);
+      else setPicked([]);
+    }
+  };
+  // The write-in is saved when its box loses focus, like a comment.
+  const saveOther = () => {
+    if (!otherOn || picked.includes(written)) return;
+    if (!written) return item.multiple && chosen.length !== picked.length && choose(chosen);
+    choose(item.multiple ? [...chosen, written] : [written]);
+  };
+  const type = item.multiple ? "checkbox" : "radio";
+  const rich = item.choices.some((c) => typeof c !== "string");
   return (
     <fieldset className="choices" disabled={disabled}>
       <legend className="visually-hidden">{plain(item.text)}</legend>
-      {item.choices.map((c) => {
-        const on = picked.includes(c);
-        return (
-          <label key={c} className={`choice ${on ? "on" : ""}`}>
-            <input
-              type={item.multiple ? "checkbox" : "radio"}
-              name={name}
-              checked={on}
-              onChange={() => choose(item.multiple ? (on ? picked.filter((p) => p !== c) : item.choices.filter((x) => x === c || picked.includes(x))) : [c])}
-            />
-            <span>{c}</span>
+      <div className={rich ? "choice-grid" : "choice-rows"} style={rich ? { "--cols": item.columns ?? 1 } : undefined}>
+        {item.choices.map((c) => {
+          const label = choiceLabel(c);
+          const on = chosen.includes(label);
+          return (
+            <label key={label} className={`choice ${rich ? "rich" : ""} ${on ? "on" : ""}`}>
+              {c.images?.length > 0 && <span className="choice-images">{c.images.map((src) => <img key={src} src={fileUrl(src)} alt="" />)}</span>}
+              <span className="choice-head">
+                <input type={type} name={name} checked={on} onChange={() => toggle(label, on)} />
+                <span>{label}</span>
+              </span>
+              {c.text && <Md media={c.media}>{c.text}</Md>}
+            </label>
+          );
+        })}
+      </div>
+      {item.other && (
+        <div className={`choice other ${otherOn ? "on" : ""}`}>
+          <label className="choice-head">
+            <input type={type} name={name} checked={otherOn} onChange={toggleOther} />
+            <span>Other…</span>
           </label>
-        );
-      })}
+          {otherOn && (
+            <input
+              type="text"
+              className="other-text"
+              aria-label="Your own answer"
+              placeholder="Type your answer"
+              maxLength={500}
+              value={otherText}
+              autoFocus={!savedOther}
+              onChange={(e) => setOtherText(e.target.value)}
+              onBlur={saveOther}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            />
+          )}
+        </div>
+      )}
       {decision && !decision.sent && <span className="unsent">not sent yet</span>}
       {item.multiple && <span className="hint">Pick any that apply.</span>}
     </fieldset>
@@ -348,10 +413,15 @@ export function labelOf(round, itemId) {
 export function RoundView({ round, messages, decisions, annotations, onMark, draft, setDraft, onDecide, ended, sending, flags, toggleFlag, jump }) {
   const [page, setPage] = useState(0);
   const [focused, setFocused] = useState(null);
+  // Questions all at once or one at a time: the page's own setting until the
+  // user switches, per "round/page". step is the question showing.
+  const [modes, setModes] = useState({});
+  const [step, setStep] = useState(0);
   useEffect(() => {
     setPage(0);
     setFocused(null);
   }, [round?.id]);
+  useEffect(() => setStep(0), [round?.id, page]);
   // Go to the next matching item after the one last jumped to, or after the
   // top of the page the user turned to. Runs once per click.
   const handled = useRef(null);
@@ -366,10 +436,16 @@ export function RoundView({ round, messages, decisions, annotations, onMark, dra
     setPage(next.page);
     setFocused(next.id);
   });
-  // Scroll to the item jumped to, once its page is showing.
+  // A jump to a question shows that question when they come one at a time.
+  const questions = round ? pagesOf(round)[Math.min(page, pagesOf(round).length - 1)].blocks.filter((b) => b.type === "question") : [];
+  useEffect(() => {
+    const i = questions.findIndex((q) => q.id === focused);
+    if (i >= 0) setStep(i);
+  }, [focused, page]);
+  // Scroll to the item jumped to, once its page (and question) is showing.
   useEffect(() => {
     if (focused) document.getElementById(`item-${focused}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [focused, page]);
+  }, [focused, page, step]);
 
   if (!round) {
     return (
@@ -386,6 +462,10 @@ export function RoundView({ round, messages, decisions, annotations, onMark, dra
   const comments = latestOf(decisions, true);
   const draftDecision = latest.get(`${round.id}/draft`);
   const ctx = { round, decisions: latest, comments, marks: marksOf(annotations), onMark, draft, setDraft, onDecide, ended, sending, flags, toggleFlag, focused };
+  const modeKey = `${round.id}/${page}`;
+  const oneByOne = questions.length > 1 && (modes[modeKey] ?? current.questions ?? "all") === "one";
+  const at = Math.min(step, questions.length - 1);
+  const shown = (b) => !oneByOne || b.type !== "question" || b === questions[at];
   // Paging by hand starts the next jump from the top of that page.
   const turn = (i) => {
     setPage(i);
@@ -427,8 +507,24 @@ export function RoundView({ round, messages, decisions, annotations, onMark, dra
 
       <section className="page" aria-label={current.title}>
         {pages.length > 1 && <h2 className="page-title">{current.title}</h2>}
+        {questions.length > 1 && (
+          <div className="question-bar">
+            <div className="segmented" role="group" aria-label="Show questions">
+              {[["all", "All"], ["one", "One at a time"]].map(([m, label]) => (
+                <button key={m} type="button" aria-pressed={(m === "one") === oneByOne} onClick={() => setModes({ ...modes, [modeKey]: m })}>{label}</button>
+              ))}
+            </div>
+            {oneByOne && (
+              <div className="stepper">
+                <span>Question {at + 1} of {questions.length}</span>
+                <button type="button" onClick={() => setStep(at - 1)} disabled={at === 0} aria-label="Previous question"><ChevronLeft size={16} aria-hidden="true" />Back</button>
+                <button type="button" onClick={() => setStep(at + 1)} disabled={at === questions.length - 1} aria-label="Next question">Next<ChevronRight size={16} aria-hidden="true" /></button>
+              </div>
+            )}
+          </div>
+        )}
         {/* Keyed by round too: a revision reusing an id starts fresh. */}
-        {current.blocks.map((b, i) => <Block key={`${round.id}/${b.id ?? i}`} block={b} ctx={ctx} />)}
+        {current.blocks.map((b, i) => shown(b) && <Block key={`${round.id}/${b.id ?? i}`} block={b} ctx={ctx} />)}
       </section>
 
       <section className="notes" aria-label="History for this round">

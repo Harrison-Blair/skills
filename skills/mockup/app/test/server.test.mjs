@@ -5,6 +5,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/server.mjs";
+import { format } from "../lib/format.mjs";
 
 const TOKEN = "t".repeat(43);
 let app, port, dir;
@@ -315,6 +316,52 @@ test("multiple-choice questions take a list of their choices", async () => {
   const bad = directions();
   bad.pages[1].blocks[0] = { type: "question", id: "q", text: "?", multiple: true };
   assert.match((await call("POST", "/api/agent/round", { body: bad })).body.error, /multiple.*needs choices/);
+});
+
+test("choices can carry text and images, sit in columns, and allow a write-in", async () => {
+  const r = directions();
+  r.pages[1].questions = "one";
+  r.pages[1].blocks[0] = {
+    type: "question", id: "tone", text: "Tone?", columns: 2, other: true, multiple: true,
+    choices: [{ label: "Calm", text: "Soft", images: [asset("assets/web/calm.png")] }, "Bright"],
+  };
+  const res = await call("POST", "/api/agent/round", { body: r });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const q = res.body.pages[1];
+  assert.equal(q.questions, "one");
+  assert.equal(q.blocks[0].columns, 2);
+  assert.match(q.blocks[0].choices[0].images[0], /^renders\/published\//, "choice images are published like option images");
+
+  const decide = (value) => call("POST", "/api/decisions", { body: { round: "mood-1", item: "tone", value } });
+  assert.equal((await decide(["Calm", "a warm grey"])).status, 201);
+  for (const value of [["a", "b"], ["Calm", " "], "Calm"]) assert.equal((await decide(value)).status, 400, JSON.stringify(value));
+  const m = await call("POST", "/api/messages", { body: { kind: "feedback" } });
+  const rounds = (await call("GET", "/api/state")).body.rounds;
+  assert.match(format([m.body], rounds, dir), /chose "Calm" and wrote in "a warm grey" for mood-1\/tone/);
+
+  const cases = [
+    [(b) => { b.choices = [{ text: "no label" }, "B"]; }, /choices\[0\]\.label/],
+    [(b) => { b.choices = ["A", "A"]; }, /labels must be unique/],
+    [(b) => { b.columns = 4; }, /columns.*1, 2 or 3/],
+    [(b) => { delete b.choices; b.other = true; }, /other.*needs choices/],
+  ];
+  for (const [change, error] of cases) {
+    const bad = directions();
+    change(bad.pages[1].blocks[0]);
+    assert.match((await call("POST", "/api/agent/round", { body: bad })).body.error, error);
+  }
+  const badPage = directions();
+  badPage.pages[1].questions = "some";
+  assert.match((await call("POST", "/api/agent/round", { body: badPage })).body.error, /pages\[1\]\.questions/);
+});
+
+test("single-answer questions take a write-in only when they allow one", async () => {
+  const r = directions();
+  await call("POST", "/api/agent/round", { body: r });
+  assert.equal((await call("POST", "/api/decisions", { body: { round: "mood-1", item: "tone", value: "Muted" } })).status, 400);
+  r.pages[1].blocks[0].other = true;
+  await call("POST", "/api/agent/round", { body: r });
+  assert.equal((await call("POST", "/api/decisions", { body: { round: "mood-2", item: "tone", value: "Muted" } })).status, 201);
 });
 
 test("comments ride along separately from reactions on the same item", async () => {

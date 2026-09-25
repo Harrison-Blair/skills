@@ -23,6 +23,23 @@ function itemLabel(rounds, roundId, itemId) {
   return `${roundId}/${itemId}`;
 }
 
+// A question's choice labels, to tell a picked choice from a write-in.
+function labelsOf(rounds, roundId, itemId) {
+  const round = rounds.find((r) => r.id === roundId);
+  for (const page of round?.pages ?? []) {
+    const b = page.blocks.find((x) => x.id === itemId);
+    if (b?.choices) return b.choices.map((c) => (typeof c === "string" ? c : c.label));
+  }
+  return null;
+}
+
+function answer(values, labels) {
+  const q = (v) => `"${v}"`;
+  const picked = values.filter((v) => !labels || labels.includes(v));
+  const written = values.filter((v) => labels && !labels.includes(v));
+  return [picked.length ? `chose ${picked.map(q).join(", ")}` : "", written.length ? `wrote in ${written.map(q).join(", ")}` : ""].filter(Boolean).join(" and ");
+}
+
 const VERDICT = { like: "liked", dislike: "disliked", approve: "APPROVED", changes: "asked for changes to" };
 
 // What the agent reads about browser messages, the same whichever way it
@@ -46,9 +63,10 @@ export function format(messages, rounds, designDir, harness = "claude") {
         lines.push(d.comment.trim() ? `* commented on ${itemLabel(rounds, d.round, d.item)}: ${d.comment.trim()}` : `* deleted their comment on ${itemLabel(rounds, d.round, d.item)}`);
         continue;
       }
+      const labels = labelsOf(rounds, d.round, d.item);
       const verdict = Array.isArray(d.value)
-        ? d.value.length ? `chose ${d.value.map((v) => `"${v}"`).join(", ")} for` : "cleared their answers to"
-        : VERDICT[d.value] ?? `chose "${d.value}" for`;
+        ? d.value.length ? `${answer(d.value, labels)} for` : "cleared their answers to"
+        : (!labels && VERDICT[d.value]) || `${answer([d.value], labels)} for`;
       lines.push(`* ${verdict} ${itemLabel(rounds, d.round, d.item)}`);
     }
     const a = m.attachments;

@@ -15,9 +15,13 @@ A round is a JSON file passed to `mockup round --file <file>`. The flags `--stag
     { "title": "Textures", "blocks": [
       { "type": "image", "id": "grain", "src": "assets/web/grain.jpg", "caption": "Natural grain" }
     ]},
-    { "title": "Questions", "blocks": [
+    { "title": "Questions", "questions": "one", "blocks": [
       { "type": "question", "id": "tone", "text": "Calm or energetic?", "choices": ["Calm", "Energetic"] },
-      { "type": "question", "id": "moments", "text": "When do you check in?", "choices": ["Morning", "Midday", "Night"], "multiple": true },
+      { "type": "question", "id": "moments", "text": "When do you check in?", "choices": ["Morning", "Midday", "Night"], "multiple": true, "other": true },
+      { "type": "question", "id": "nav", "text": "Which navigation?", "columns": 2, "choices": [
+        { "label": "Sidebar", "text": "Always visible, like an editor.", "images": ["assets/own/nav-sidebar.png"] },
+        { "label": "Bottom tabs", "text": "Thumb-friendly on phones.", "images": ["assets/own/nav-tabs.png"] }
+      ]},
       { "type": "question", "id": "dark-first", "text": "Should dark mode be the main look?" }
     ]}
   ]
@@ -29,6 +33,7 @@ A round is a JSON file passed to `mockup round --file <file>`. The flags `--stag
 - `stage`: `context`, `mood`, `language`, `components`, `states`, `prototype` or `handoff`.
 - `kind`: `explore` (the default) for taste checks, or `draft` for a stage proposal. A draft shows **Approve draft** and **Request changes** above its pages.
 - `pages`: one or more pages. The user switches between them with tabs and Prev/Next buttons. Use pages to separate directions, details and questions.
+- `questions` on a page: `"all"` (the default) stacks its questions; `"one"` starts them one at a time with Back and Next. A page with two or more questions shows a switch, so the user can change it either way. Use `"one"` for a long list of questions, or when each one needs attention on its own.
 
 ## Blocks
 
@@ -37,13 +42,15 @@ A round is a JSON file passed to `mockup round --file <file>`. The flags `--stag
 | `markdown` | `text` | read it |
 | `option` | `id`, `title`, optional `text` and `images` | like or dislike it, select it, and mark up its images |
 | `image` | `src`, optional `caption`, optional `id` | mark it up; with an `id`, also like, dislike or select it |
-| `question` | `id`, `text` (Markdown), optional `choices` (two or more), optional `multiple` | pick one choice (radio rows), several with `"multiple": true` (checkbox rows), or like or dislike it when there are no choices |
+| `question` | `id`, `text` (Markdown), optional `choices` (two or more), optional `multiple`, `other` and `columns` | pick one choice (radios), several with `"multiple": true` (checkboxes), or like or dislike it when there are no choices. `"other": true` adds an "Other…" choice where they type their own answer. |
 | `preview` | `id`, `title`, `src` (a page under `ui/`), optional `text` and `device` | use the live page, switch device and light or dark, freeze it to pin or circle what they see, and like, dislike or select it |
 
 Rules:
 
 - `id` values use lowercase letters, digits and hyphens, and are unique within the round. `draft` is reserved.
 - Image paths are relative to the design directory and must be under `assets/` or `renders/`: PNG, JPEG, WebP, GIF, or SVG for your own swatches. Web images cannot be linked directly; download them into `assets/web/` first. Publishing copies each image, including images in the round's Markdown, so a round keeps showing what it showed even if you later change the file; publish a new round to show a new version. Copies of your own and uploaded images go to `assets/published/`, which Git tracks; copies of web images go to the ignored `renders/published/`.
+- A choice is a label, or `{ "label", "text", "images" }` when the choices need comparing: `text` is Markdown and `images` follow the image rules below. Labels are unique within a question and are what you get back. Plain choices are full-width rows; choices with text or images are cards, `columns` (1, 2 or 3, default 1) to a row, fewer on a narrow screen. Use 2 to compare pairs, and 3 only for short cards.
+- A write-in reaches you as `wrote in "<text>"`, next to any choices picked.
 - Standalone image blocks on a page are laid out as a gallery. Options, questions and Markdown take the full width.
 - Keep an explore round to a handful of items, so the user can react to all of them quickly.
 

@@ -140,10 +140,36 @@ function block(b, where, designDir, ids) {
       let choices;
       if (b.choices !== undefined) {
         if (!Array.isArray(b.choices) || b.choices.length < 2) bad(`${where}.choices`, "must list at least two choices");
-        choices = b.choices.map((c, i) => text(c, `${where}.choices[${i}]`));
+        // A choice is its label, or { label, text, images } to compare side by side.
+        choices = b.choices.map((c, i) => {
+          const at = `${where}.choices[${i}]`;
+          if (typeof c === "string") return text(c, at);
+          if (!c || typeof c !== "object") bad(at, "must be a string or { label, text, images }");
+          return {
+            label: text(c.label, `${at}.label`),
+            text: text(c.text, `${at}.text`, false),
+            ...markdown(designDir, c.text, `${at}.text`),
+            images: images(c.images, `${at}.images`),
+          };
+        });
+        if (new Set(choices.map(choiceLabel)).size !== choices.length) bad(`${where}.choices`, "labels must be unique");
       }
-      if (b.multiple !== undefined && (typeof b.multiple !== "boolean" || !choices)) bad(`${where}.multiple`, "must be true or false, and needs choices");
-      return { type: "question", id: id(), text: text(b.text, `${where}.text`), ...markdown(designDir, b.text, `${where}.text`), choices, ...(b.multiple ? { multiple: true } : {}) };
+      const needsChoices = (field, ok) => {
+        if (b[field] !== undefined && (!ok(b[field]) || !choices)) bad(`${where}.${field}`, `must be ${field === "columns" ? "1, 2 or 3" : "true or false"}, and needs choices`);
+      };
+      needsChoices("multiple", (v) => typeof v === "boolean");
+      needsChoices("other", (v) => typeof v === "boolean");
+      needsChoices("columns", (v) => [1, 2, 3].includes(v));
+      return {
+        type: "question",
+        id: id(),
+        text: text(b.text, `${where}.text`),
+        ...markdown(designDir, b.text, `${where}.text`),
+        choices,
+        ...(b.multiple ? { multiple: true } : {}),
+        ...(b.other ? { other: true } : {}),
+        ...(b.columns > 1 ? { columns: b.columns } : {}),
+      };
     }
     case "preview":
       if (b.device !== undefined && !DEVICES.includes(b.device)) bad(`${where}.device`, `must be one of ${DEVICES.join(", ")}`);
@@ -188,7 +214,13 @@ export function normalizeRound(input, designDir) {
       const where = `pages[${i}]`;
       if (!p || typeof p !== "object") bad(where, "must be an object");
       if (!Array.isArray(p.blocks)) bad(`${where}.blocks`, "must be a list");
-      return { title: text(p.title, `${where}.title`), blocks: p.blocks.map((b, j) => block(b, `${where}.blocks[${j}]`, designDir, ids)) };
+      // How the page's questions first show; the user can switch.
+      if (p.questions !== undefined && !["all", "one"].includes(p.questions)) bad(`${where}.questions`, 'must be "all" or "one"');
+      return {
+        title: text(p.title, `${where}.title`),
+        ...(p.questions === "one" ? { questions: "one" } : {}),
+        blocks: p.blocks.map((b, j) => block(b, `${where}.blocks[${j}]`, designDir, ids)),
+      };
     }),
   };
 }
@@ -198,18 +230,27 @@ export function pagesOf(round) {
   return round.pages ?? [{ title: round.title, blocks: round.body ? [{ type: "markdown", text: round.body }] : [] }];
 }
 
+export const choiceLabel = (c) => (typeof c === "string" ? c : c.label);
+
+// A write-in answer: any text that is not one of the choices.
+const writeIn = (v) => typeof v === "string" && v.trim() !== "" && v.length <= 500;
+
 // Why a decision value is not allowed for this item, or null when it is. A
 // multiple-choice question takes a list of its choices (empty clears it).
+// With `other`, one answer may be the user's own text instead.
 export function decisionError(round, itemId, value) {
   let allowed;
   if (itemId === DRAFT_ITEM) allowed = round.kind === "draft" ? ["approve", "changes"] : null;
   else {
     const item = findItem(round, itemId);
-    allowed = item ? item.choices ?? ["like", "dislike"] : null;
+    allowed = item ? item.choices?.map(choiceLabel) ?? ["like", "dislike"] : null;
+    const extra = (list) => list.filter((v) => !allowed.includes(v));
     if (item?.multiple) {
-      const ok = Array.isArray(value) && value.every((v) => allowed.includes(v)) && new Set(value).size === value.length;
-      return ok ? null : `value must be a list drawn from: ${allowed.join(", ")}`;
+      const others = Array.isArray(value) ? extra(value) : null;
+      const ok = others && new Set(value).size === value.length && (others.length === 0 || (item.other && others.length === 1 && writeIn(others[0])));
+      return ok ? null : `value must be a list drawn from: ${allowed.join(", ")}${item.other ? ", plus one write-in" : ""}`;
     }
+    if (item?.other && writeIn(value)) return null;
   }
   if (!allowed) return "unknown round or item";
   return allowed.includes(value) ? null : `value must be one of ${allowed.join(", ")}`;

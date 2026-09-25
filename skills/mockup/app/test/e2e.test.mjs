@@ -152,6 +152,53 @@ test("a long round scrolls inside the canvas, never the page", { timeout: 60_000
   assert.equal(await page.evaluate(() => scrollY), 0, "wheeling over the stages panel scrolls the page");
 });
 
+test("questions step one at a time, compare in columns, and take a write-in", { timeout: 90_000 }, async () => {
+  const designDir = join(repo, ".design", "e2e");
+  mkdirSync(join(designDir, "assets", "own"), { recursive: true });
+  writeFileSync(join(designDir, "assets", "own", "b.png"), PNG_1PX);
+  writeFileSync(join(repo, "steps.json"), JSON.stringify({
+    stage: "states", title: "Stepping", pages: [{ title: "Q", questions: "one", blocks: [
+      { type: "markdown", text: "Intro stays put." },
+      { type: "question", id: "nav", text: "Which nav?", columns: 2, choices: [
+        { label: "Sidebar", text: "Like the editor", images: ["assets/own/b.png"] },
+        { label: "Top tabs", text: "Simpler" },
+        { label: "Palette", text: "Keyboard first" },
+      ] },
+      { type: "question", id: "extras", text: "Which extras?", multiple: true, other: true, choices: ["Search", "RSS"] },
+    ] }],
+  }));
+  await mockup(repo, "round", "--file", "steps.json");
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  await page.goto(link);
+  await page.getByRole("button", { name: /Stepping/ }).click();
+
+  // Starts one at a time, as the round asked; other blocks stay.
+  await page.getByText("Question 1 of 2").waitFor();
+  await page.getByText("Intro stays put.").waitFor();
+  assert.equal(await page.locator("article.question").count(), 1);
+  const [a, b, c] = await page.locator(".choice.rich").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().toJSON()));
+  assert.ok(a.y === b.y && b.x > a.x, "the first two choices sit side by side");
+  assert.ok(c.y > a.y, "the third wraps to the next row");
+  await page.getByRole("radio", { name: "Top tabs" }).check();
+
+  await page.getByRole("button", { name: "Next question" }).click();
+  await page.getByText("Question 2 of 2").waitFor();
+  await page.getByRole("checkbox", { name: "Search" }).check();
+  await page.getByRole("checkbox", { name: "Other…" }).check();
+  await page.getByLabel("Your own answer").fill("A terminal");
+  await page.getByLabel("Your own answer").press("Enter");
+
+  await page.getByRole("button", { name: "All" }).click();
+  assert.equal(await page.locator("article.question").count(), 2, "All shows every question");
+
+  const waiting = mockup(repo, "wait");
+  await page.getByRole("complementary", { name: "Chat with the agent" }).getByRole("button", { name: "Send feedback" }).click();
+  const { stdout } = await waiting;
+  assert.match(stdout, /chose "Top tabs" for states-\d+\/nav/);
+  assert.match(stdout, /chose "Search" and wrote in "A terminal" for states-\d+\/extras/);
+  await mockup(repo, "say", "Got it.");
+});
+
 test("choices are radio or checkbox rows, and side panels resize and collapse", { timeout: 60_000 }, async () => {
   writeFileSync(join(repo, "q.json"), JSON.stringify({
     stage: "mood", title: "Choices", pages: [{ title: "Q", blocks: [

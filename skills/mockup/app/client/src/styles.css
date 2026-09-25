@@ -153,12 +153,32 @@ button { font: inherit; }
 .comment-box textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .draft-comment { display: contents; }
 
-/* Question choices: one full-width row each */
+/* Question choices: one full-width row each, or cards side by side to compare */
 .choices { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.choice-rows { display: grid; gap: 6px; }
+/* --cols cards to a row, fewer when a card would drop below 200px. */
+.choice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(200px, calc((100% - (var(--cols) - 1) * 10px) / var(--cols))), 1fr)); gap: 10px; }
+.choice-head { display: flex; align-items: center; gap: 12px; }
+.choice.rich { flex-direction: column; align-items: stretch; gap: 8px; }
+.choice.rich .md { font-weight: 400; color: var(--muted); }
+.choice-images { display: grid; gap: 6px; }
+.choice-images img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.choice.other { flex-wrap: wrap; cursor: default; }
+.choice.other .choice-head { cursor: pointer; }
+.other-text { flex: 1 1 200px; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; font-weight: 400; }
+.question-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.segmented { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.segmented button { padding: 5px 12px; border: 0; border-radius: 999px; background: none; color: var(--muted); cursor: pointer; }
+.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.stepper { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
+.stepper span { margin-right: 4px; }
+.stepper button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--ink); cursor: pointer; }
+.stepper button:disabled { opacity: 0.4; cursor: default; }
+.segmented button:focus-visible, .stepper button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .choice { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); cursor: pointer; line-height: 1.35; }
 .choice:hover { border-color: var(--muted); }
 .choice.on { border-color: var(--accent); background: var(--user); font-weight: 600; }
-.choice input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.choice-head input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .choices:disabled .choice { opacity: 0.6; cursor: default; }
 .hint { font-size: 12px; color: var(--muted); }
