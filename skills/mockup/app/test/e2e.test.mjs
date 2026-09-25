@@ -137,6 +137,21 @@ test("likes, choices, selections, pins and uploads reach the agent as one feedba
   assert.equal(await card.getByLabel("Note on mark 1").inputValue(), "this spot");
 });
 
+test("a long round scrolls inside the canvas, never the page", { timeout: 60_000 }, async () => {
+  const blocks = Array.from({ length: 12 }, (_, i) => ({ type: "question", id: `q${i}`, text: `Question ${i}?`, choices: ["A", "B", "C"] }));
+  writeFileSync(join(repo, "long.json"), JSON.stringify({ stage: "context", title: "Many questions", pages: [{ title: "Q", blocks }] }));
+  await mockup(repo, "round", "--file", "long.json");
+  const page = await browser.newPage({ viewport: { width: 1400, height: 700 } });
+  await page.goto(link);
+  await page.getByRole("button", { name: /Many questions/ }).click();
+  await page.locator("p", { hasText: "Question 11?" }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollHeight), 700, "hidden question legends stretch the page");
+  await page.mouse.move(100, 500);
+  await page.mouse.wheel(0, 2000);
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => scrollY), 0, "wheeling over the stages panel scrolls the page");
+});
+
 test("choices are radio or checkbox rows, and side panels resize and collapse", { timeout: 60_000 }, async () => {
   writeFileSync(join(repo, "q.json"), JSON.stringify({
     stage: "mood", title: "Choices", pages: [{ title: "Q", blocks: [
