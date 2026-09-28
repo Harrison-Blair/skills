@@ -1,7 +1,8 @@
 # skills
 
 Portable agent skills plus the session-start hooks that keep them updated, for
-Claude Code, Codex, Cursor, Pi, and OpenCode. One clone per machine is the source
+Claude Code, Codex, Cursor, Pi, and OpenCode, and a shared
+[statusline](statusline/README.md) for Claude Code and Codex. One clone per machine is the source
 of truth for synced skills. Machine-local skills can live alongside its links.
 
 ## Layout
@@ -11,6 +12,7 @@ skills/<name>/SKILL.md   one skill per directory (see skills/agnostic-skill for 
 hooks/claude.json        SessionStart entry merged into ~/.claude/settings.json
 hooks/codex.json         SessionStart entry merged into ~/.codex/hooks.json
 pi/<name>/               Pi extensions (skills-autopull, mockup), linked into ~/.pi/agent/extensions
+statusline/              statusline renderer and its shared config.json
 scripts/setup.sh         one-time setup, and the --sync command the hooks run
 ```
 
@@ -82,6 +84,7 @@ absent:
   (or, in Claude's directory, into `~/.agents/skills`) at something no longer
   there. A junction pointing anywhere else is left alone, and removal is
   `rmdir` without `/S`, which unlinks the junction and never its target.
+- Sets up the [statusline](#statusline).
 
 Setup reports each step; sync is quiet on stdout and prints only warnings. One
 run happens at a time: each holds `.sync.lock` in the clone, a directory
@@ -98,6 +101,33 @@ Two manual steps remain:
   Settings > Rules, Skills, Subagents and it will run the hook from
   `~/.claude/settings.json`.
 
+## Statusline
+
+Setup and sync also point both harnesses at `statusline/`, run straight from
+the clone, so a pushed change to its `config.json` or `statusline.py` arrives
+on its own. This part needs Python 3.11 or newer (`python3`); without it the
+statusline is skipped with a warning and everything else still runs.
+
+- Sets Claude's `statusLine` in `~/.claude/settings.json` to
+  `python3 "<clone>/statusline/statusline.py" render claude`.
+- Runs `statusline.py sync codex`, which writes `[tui].status_line` in
+  `~/.codex/config.toml` and leaves the rest of that file alone.
+- Drops the `SessionStart` entries installed by the retired `statuslines` repo
+  (`setup.sh" --sync --hook=statuslines`) from both hook files, so a machine
+  that used it moves over at its next session start.
+
+Claude's `statusLine` is replaced only when it is missing, already a
+`statusline.py ... render claude` from any clone (so a moved clone is picked
+up), or the legacy `~/.claude/statusline-command.sh` wrapper. Any other
+statusLine is custom: it is left alone with a warning. To replace it anyway:
+
+```sh
+~/source/skills/scripts/setup.sh --force
+```
+
+`--force` is for setup only; a sync never overwrites a custom statusLine.
+Codex's `[tui].status_line` is always managed.
+
 ## Uninstalling
 
 ```sh
@@ -107,8 +137,9 @@ Two manual steps remain:
 This reverses what setup installed for that clone and prints each removal: the
 skill links in `~/.agents/skills` that point into it, the links in
 `~/.claude/skills` that point at those, the Pi extension link, the command
-wrappers in `~/.local/bin` that run its skills' commands, and the hook
-entries running that clone's `--sync`. It never removes a real directory, a
+wrappers in `~/.local/bin` that run its skills' commands, the hook
+entries running that clone's `--sync`, and Claude's `statusLine` when it runs
+that clone's statusline. Codex's `[tui].status_line` is kept. It never removes a real directory, a
 link pointing anywhere else, a hook this repo did not write, or an entry for a
 different clone -- including a dead one, which belongs to whoever owns it. The
 clone itself stays; delete it afterwards if you want it gone.
@@ -169,7 +200,7 @@ shellcheck scripts/setup.sh
 
 Tests use temporary fixtures and do not change your installed skills or hooks.
 They cover setup, sync, hook merging, the post-pull re-exec, the sync lock,
-bootstrap, uninstall, migration, conflicts, pruning, metadata, and Markdown
-links. The Windows job runs the junction tests with Git for Windows Bash;
+bootstrap, uninstall, migration, conflicts, pruning, the statusline install,
+its renderer and Codex adapter, metadata, and Markdown links. The Windows job runs the junction tests with Git for Windows Bash;
 native Windows testing is required before a junction change -- pruning
 included -- is considered verified.

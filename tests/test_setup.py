@@ -81,6 +81,7 @@ class SetupTests(unittest.TestCase):
         self.claude.parent.mkdir(parents=True)
         (self.repo / "scripts").mkdir(parents=True)
         shutil.copytree(SOURCE / "hooks", self.repo / "hooks")
+        shutil.copytree(SOURCE / "statusline", self.repo / "statusline")
         self.script = self.repo / "scripts/setup.sh"
         self.script.write_text(
             (SOURCE / "scripts/setup.sh").read_text().replace(
@@ -307,6 +308,77 @@ class SetupTests(unittest.TestCase):
         result = self.run_setup("--sync")
         self.assertEqual(self.hook_commands(settings), [live, self.sync_command()])
         self.assertIn("another clone", result.stderr)
+
+    def status_command(self, repo=None):
+        """The statusLine command setup.sh writes for a clone."""
+        return 'python3 "%s/statusline/statusline.py" render claude' % Path(
+            repo or self.repo).resolve()
+
+    def test_setup_points_both_harnesses_at_the_statusline(self):
+        (self.home / ".codex").mkdir()
+        settings = self.claude.parent / "settings.json"
+        toml = self.home / ".codex/config.toml"
+        toml.write_text('model = "keep"\n')
+        self.run_setup()
+        self.assertEqual(json.loads(settings.read_text())["statusLine"],
+                         {"type": "command", "command": self.status_command()})
+        check = subprocess.run(
+            ["python3", str(self.repo / "statusline/statusline.py"), "--config",
+             str(self.repo / "statusline/config.json"), "check", "codex",
+             "--target", str(toml)], text=True, capture_output=True)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn('model = "keep"', toml.read_text())
+        before = (settings.read_bytes(), toml.read_bytes())
+        result = self.run_setup("--sync")
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        self.assertEqual((settings.read_bytes(), toml.read_bytes()), before)
+
+    def test_only_a_custom_statusline_needs_force(self):
+        settings = self.claude.parent / "settings.json"
+        for command in ("~/.claude/statusline-command.sh",
+                        # ${HOME}: the fixture rewrites every bare $HOME in the script.
+                        "bash \"${HOME}/.claude/statusline-command.sh\"",
+                        self.status_command(self.base / "old-clone")):
+            with self.subTest(command=command):
+                settings.write_text(json.dumps(
+                    {"statusLine": {"type": "command", "command": command, "padding": 1}}))
+                self.run_setup("--sync")
+                self.assertEqual(json.loads(settings.read_text())["statusLine"], {
+                    "type": "command", "command": self.status_command(), "padding": 1})
+        custom = {"type": "command", "command": "my-line"}
+        settings.write_text(json.dumps({"statusLine": custom}))
+        result = self.run_setup("--sync")
+        self.assertIn("custom statusLine", result.stderr)
+        self.assertEqual(json.loads(settings.read_text())["statusLine"], custom)
+        self.run_setup("--force")
+        self.assertEqual(json.loads(settings.read_text())["statusLine"]["command"],
+                         self.status_command())
+
+    def test_retired_statuslines_hooks_are_dropped(self):
+        (self.home / ".codex").mkdir()
+        old = 'sh "/gone or not/statuslines/scripts/setup.sh" --sync --hook=statuslines'
+        other = {"matcher": "startup",
+                 "hooks": [{"type": "command", "command": "echo local"}]}
+        paths = (self.claude.parent / "settings.json", self.home / ".codex/hooks.json")
+        for path in paths:
+            path.write_text(json.dumps({"hooks": {"SessionStart": [
+                other, {"matcher": "startup",
+                        "hooks": [{"type": "command", "command": old}]}]}}))
+        self.run_setup("--sync")
+        for path in paths:
+            self.assertEqual(self.hook_commands(path),
+                             ["echo local", self.sync_command()])
+
+    def test_uninstall_removes_only_this_clones_statusline(self):
+        settings = self.claude.parent / "settings.json"
+        self.run_setup()
+        self.assertIn("statusLine", json.loads(settings.read_text()))
+        self.run_setup("--uninstall")
+        self.assertNotIn("statusLine", json.loads(settings.read_text()))
+        custom = {"type": "command", "command": "my-line"}
+        settings.write_text(json.dumps({"statusLine": custom}))
+        self.run_setup("--uninstall")
+        self.assertEqual(json.loads(settings.read_text())["statusLine"], custom)
 
     def test_a_pull_that_moves_head_reexecs_the_new_script_once(self):
         git = self.base / "bin/git"

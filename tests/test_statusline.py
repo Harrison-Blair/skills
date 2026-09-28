@@ -9,13 +9,14 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
-import statusline
+HERE = Path(__file__).resolve().parents[1] / "statusline"
+sys.path.insert(0, str(HERE))
 
-
-HERE = Path(__file__).resolve().parent
+import statusline  # noqa: E402
 
 
 class RendererTests(unittest.TestCase):

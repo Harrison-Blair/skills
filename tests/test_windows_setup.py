@@ -26,6 +26,7 @@ class WindowsSetupTests(unittest.TestCase):
             self.repo / "scripts/setup.sh",
         )
         shutil.copytree(Path(__file__).parents[1] / "hooks", self.repo / "hooks")
+        shutil.copytree(Path(__file__).parents[1] / "statusline", self.repo / "statusline")
         self.add_skill(self.repo / "skills/shared-one")
         self.env = dict(os.environ)
         # Git Bash accepts drive-letter paths with forward slashes and uses HOME

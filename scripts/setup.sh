@@ -2,6 +2,7 @@
 # Wire this clone into the local machine, or (--sync) pull and reconcile.
 #
 #   scripts/setup.sh              one-time setup after clone
+#   scripts/setup.sh --force      setup, also replacing a custom Claude statusLine
 #   scripts/setup.sh --sync       what the session-start hooks run: pull,
 #                                 re-link, and re-merge the hook entries
 #   scripts/setup.sh --uninstall  remove the links and hook entries this clone
@@ -31,6 +32,7 @@ REPO=""
 LOCK=""
 STAMP=""
 MODE=setup
+FORCE=0
 LOCK_HELD=0
 
 is_windows() {
@@ -552,6 +554,120 @@ apply_hooks() {
   fi
 }
 
+# claude_statusline FILE [ACTION]: point Claude's statusLine at this clone's
+# statusline/statusline.py, or with "remove" take it out if it is this clone's.
+# The statusLine is replaced only when it is missing, a statusline.py run from
+# any clone, or the legacy ~/.claude/statusline-command.sh wrapper; any other is
+# custom and needs --force. Also drops the SessionStart entries the retired
+# statuslines repo installed (`setup.sh" --sync --hook=statuslines`), which
+# would otherwise point the statusLine back at that old clone. FILE is replaced
+# atomically, and only when its content changes.
+claude_statusline() {
+  local repo="$REPO"
+  is_windows && repo="$(cygpath -m "$REPO")"
+  STATUS_CMD="python3 \"$repo/statusline/statusline.py\" render claude" \
+    SET_STATUSLINE="$([ "${2:-merge}" = merge ] && echo 1)" FORCE="$FORCE" \
+    python3 - "$1" <<'PY'
+import json, os, re, sys, tempfile
+
+path, status_cmd = sys.argv[1], os.environ["STATUS_CMD"]
+setting = os.environ["SET_STATUSLINE"] == "1"
+OLD_HOOK_RE = re.compile(r'/scripts/setup\.sh" --sync --hook=statuslines$')
+OURS_RE = re.compile(r'^python3 "(.+)/statusline\.py" render claude$')
+LEGACY_RE = re.compile(
+    r"""^(?:(?:ba)?sh\s+)?(["']?)(?:~|\$HOME|\$\{HOME\}|/[^"']*)?"""
+    r"""/\.claude/statusline-command\.sh\1\s*$"""
+)
+
+try:
+    with open(path, encoding="utf-8") as handle:
+        original = handle.read()
+except FileNotFoundError:
+    original = None
+if original is None and not setting:
+    sys.exit(0)
+try:
+    data = json.loads(original) if original is not None else {}
+except ValueError as exc:
+    sys.exit("warn: %s is not valid JSON; statusLine left alone: %s" % (path, exc))
+hooks = data.get("hooks", {}) if isinstance(data, dict) else None
+if not isinstance(hooks, dict) or not all(isinstance(g, list) for g in hooks.values()):
+    # The hook merge leaves such a file alone too; so does this.
+    sys.exit("warn: %s has no usable hooks object; statusLine left alone" % path)
+before = json.dumps(data, sort_keys=True)
+
+for event, groups in hooks.items():
+    kept = []
+    for group in groups:
+        entries = group.get("hooks") if isinstance(group, dict) else None
+        if isinstance(entries, list):
+            left = [e for e in entries if not (
+                isinstance(e, dict) and isinstance(e.get("command"), str)
+                and OLD_HOOK_RE.search(e["command"]))]
+            if not left and entries:
+                continue
+            group["hooks"] = left
+        kept.append(group)
+    hooks[event] = kept
+
+current = data.get("statusLine")
+command = current.get("command") if isinstance(current, dict) else None
+if not setting:
+    if command == status_cmd:
+        del data["statusLine"]
+elif (current is None or os.environ["FORCE"] == "1"
+      or (isinstance(command, str) and (OURS_RE.match(command) or LEGACY_RE.match(command)))):
+    line = dict(current) if isinstance(current, dict) else {}
+    line.update(type="command", command=status_cmd)
+    data["statusLine"] = line
+else:
+    print("warn: %s has a custom statusLine; left alone (setup.sh --force replaces it)"
+          % path, file=sys.stderr)
+
+if original is not None and json.dumps(data, sort_keys=True) == before:
+    sys.exit(0)
+fd, temp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".statusline-", suffix=".json")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    if original is not None:
+        os.chmod(temp, os.stat(path).st_mode & 0o7777)
+    os.replace(temp, path)
+except BaseException:
+    if os.path.exists(temp):
+        os.unlink(temp)
+    raise
+print("updated: %s" % path)
+PY
+}
+
+# apply_statusline [ACTION]: set up (or, with "remove", take out) the shared
+# statusline in Claude and Codex. It needs python3 >= 3.11 for tomllib; without
+# it the statusline is skipped with a warning and the rest of the run goes on.
+apply_statusline() {
+  local action="${1:-merge}"
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    [ "$action" = merge ] && echo "warn: python3 >= 3.11 not found; statusline skipped" >&2
+    return 0
+  fi
+  if [ -d "$HOME/.claude" ]; then
+    claude_statusline "$HOME/.claude/settings.json" "$action"
+  fi
+  if [ -d "$HOME/.codex" ]; then
+    # The retired statuslines repo's hook lives here too; only the Claude
+    # file carries a statusLine, so setting one is skipped for this file.
+    claude_statusline "$HOME/.codex/hooks.json" remove
+    if [ "$action" = merge ]; then
+      python3 "$REPO/statusline/statusline.py" --config "$REPO/statusline/config.json" \
+        sync codex --target "$HOME/.codex/config.toml" ||
+        echo "warn: Codex status line not synced" >&2
+    else
+      echo "kept: [tui].status_line in $HOME/.codex/config.toml"
+    fi
+  fi
+}
+
 release_lock() {
   [ "$LOCK_HELD" = 1 ] || return 0
   LOCK_HELD=0
@@ -691,6 +807,7 @@ reconcile() {
   link_pi
   link_commands
   apply_hooks merge
+  apply_statusline merge
   return 0
 }
 
@@ -733,6 +850,7 @@ uninstall() {
   done
   remove_commands all
   apply_hooks remove
+  apply_statusline remove
   echo "kept: the clone at $REPO, and every local skill and hook"
   return 0
 }
@@ -753,7 +871,8 @@ main() {
   MODE="${1:-setup}"
   case "$MODE" in
     setup | --sync | --uninstall) ;;
-    *) echo "usage: $0 [--sync | --uninstall]" >&2; exit 2 ;;
+    --force) MODE=setup; FORCE=1 ;;
+    *) echo "usage: $0 [--force | --sync | --uninstall]" >&2; exit 2 ;;
   esac
 
   looks_like_clone "$REPO" || bootstrap "$@" || exit 1
@@ -768,7 +887,7 @@ main() {
   case "$MODE" in
     --uninstall) uninstall ;;
     --sync) pull "$MODE"; reconcile >/dev/null ;;
-    setup) pull "$MODE"; reconcile; next_steps ;;
+    setup) pull "$@"; reconcile; next_steps ;;
   esac
   # Returning rather than exiting: `main "$@"` is the last line, so the status
   # is the same, and an `exit` here would make ShellCheck read everything the
