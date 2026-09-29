@@ -1,8 +1,15 @@
 // Turns browser messages into plain words for the agent.
+import { wellFormed } from "../shell/shape.js";
 
 const q = (v) => `"${v}"`;
 
 function draftLines(d) {
+  if (d === null || typeof d !== "object" || Array.isArray(d)) return [`* sent a draft: ${JSON.stringify(d)}`];
+  if (!wellFormed(d)) {
+    // Unknown kinds, and known kinds of the wrong shape, still reach the agent.
+    const { id, kind, ...rest } = d;
+    return [`* sent a ${kind} draft: ${JSON.stringify(rest)}`];
+  }
   if (d.kind === "choice") {
     const field = `for ${d.name}${d.label ? ` ${q(d.label)}` : ""}`;
     const lines = [];
@@ -10,10 +17,7 @@ function draftLines(d) {
     if (d.written?.length) lines.push(`* wrote in ${d.written.map(q).join(", ")} ${field}`);
     return lines;
   }
-  if (d.kind === "text") return [`* noted ${q(d.note)}${d.name ? ` (${d.name} = ${JSON.stringify(d.value)})` : ""}`];
-  // Kinds without their own wording yet still reach the agent.
-  const { id, kind, ...rest } = d;
-  return [`* sent a ${kind} draft: ${JSON.stringify(rest)}`];
+  return [`* noted ${q(d.note)}${d.name ? ` (${d.name} = ${JSON.stringify(d.value)})` : ""}`];
 }
 
 // What the agent reads about browser messages, the same whichever way it

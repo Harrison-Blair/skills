@@ -1,4 +1,5 @@
 import { icon } from "./icons.js";
+import { wellFormed } from "./shape.js";
 
 function words(...parts) {
   const span = document.createElement("span");
@@ -15,14 +16,18 @@ function bold(text) {
 
 // Plain-words summary lines for one draft, e.g. "Chose Tabs".
 export function draftLines(draft) {
+  if (draft.kind === "malformed") {
+    const kind = typeof draft.draft?.kind === "string" ? `${draft.draft.kind} ` : "";
+    return [words(`Sent a malformed ${kind}draft`)];
+  }
+  if (!wellFormed(draft)) return [words(`Sent a ${draft.kind} draft`)];
   if (draft.kind === "choice") {
     const lines = [];
     if (draft.value?.length) lines.push(words("Chose ", bold(draft.value.join(", "))));
     for (const w of draft.written ?? []) lines.push(words(`Wrote in "${w}"`));
     return lines;
   }
-  if (draft.kind === "text") return [words(`Noted "${draft.note}"`)];
-  return [words(`Sent a ${draft.kind} draft`)];
+  return [words(`Noted "${draft.note}"`)];
 }
 
 // One flat row per draft; `onRemove` adds a remove control that calls it with the id.

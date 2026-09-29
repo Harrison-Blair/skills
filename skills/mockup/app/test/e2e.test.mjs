@@ -3,7 +3,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -198,4 +199,74 @@ test("pages whose names need escaping in a URL render, report their path, and ar
     await mockup("say", "--dir", dir, "ok");
   }
   await page.close();
+});
+
+// Opens the shell and fails the test on any error the shell page throws.
+async function openShell(url) {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  await page.goto(url);
+  await page.waitForFunction(() => document.body.dataset.connected === "1");
+  return { page, errors };
+}
+
+const BAD = { id: "bad-shape", kind: "choice", name: "nav", value: "Tabs", written: [] };
+
+test("a draft of the wrong shape from a page is kept as malformed, can be removed, and is sent", { timeout: 60_000 }, async () => {
+  const { dir, url } = await startOnce();
+  writeFileSync(join(dir, "pages", "bad.html"), `<title>Bad</title><script>
+    parent.postMessage({ mockup: 1, type: "draft", draft: ${JSON.stringify(BAD)} }, "*");
+  </script>`);
+  await mockup("show", "pages/bad.html", "--dir", dir);
+  const { page, errors } = await openShell(url);
+  const row = page.locator(".drafts .draft");
+  await page.getByText("Unsent (1)").waitFor();
+  assert.equal(await row.locator(".line").textContent(), "Sent a malformed choice draft");
+  await row.getByRole("button", { name: "Remove" }).click();
+  await row.waitFor({ state: "detached" });
+
+  const frame = page.frames().find((f) => f.url().endsWith("/d/pages/bad.html"));
+  await frame.evaluate((draft) => parent.postMessage({ mockup: 1, type: "draft", draft }, "*"), BAD);
+  await page.getByText("Unsent (1)").waitFor();
+  await page.locator("#text").fill("hi");
+  await page.getByRole("button", { name: "Send to agent" }).click();
+  await row.waitFor({ state: "detached" });
+  assert.equal(await mockup("wait", "--dir", dir), [
+    "[mockup] 1 message from the browser:",
+    "--- #1 feedback on pages/bad.html",
+    `* sent a malformed draft: {"draft":${JSON.stringify(BAD)}}`,
+    "hi",
+    "--- reply with `mockup say`, then run `mockup wait` again.",
+    "",
+  ].join("\n"));
+
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.connected === "1");
+  assert.equal(await page.locator("#chat .msg.user .line").textContent(), "Sent a malformed choice draft");
+  await page.close();
+  assert.deepEqual(errors, []);
+});
+
+test("a log that already holds a draft of the wrong shape replays, the shell loads, and wait prints", { timeout: 60_000 }, async () => {
+  const repo = mkdtempSync(join(tmpdir(), "mockup-e2e-repo-"));
+  const dir = join(repo, ".design", "poisoned");
+  mkdirSync(dir, { recursive: true });
+  const message = { id: "m1", seq: 1, from: "user", kind: "feedback", text: "", page: null, drafts: [BAD], status: "queued", createdAt: new Date().toISOString() };
+  writeFileSync(join(dir, "log.jsonl"), JSON.stringify({ type: "message", message }) + "\n");
+  const out = await mockup("start", "--design", "poisoned", "--repo", repo, "--no-open");
+  started.add(dir);
+  started.add(repo);
+
+  const { page, errors } = await openShell(out.match(/^open: (\S+)$/m)[1]);
+  assert.equal(await page.locator("#chat .msg.user .line").textContent(), "Sent a choice draft");
+  await page.close();
+  assert.deepEqual(errors, []);
+  assert.equal(await mockup("wait", "--dir", dir), [
+    "[mockup] 1 message from the browser:",
+    "--- #1 feedback",
+    '* sent a choice draft: {"name":"nav","value":"Tabs","written":[]}',
+    "--- reply with `mockup say`, then run `mockup wait` again.",
+    "",
+  ].join("\n"));
 });

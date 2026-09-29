@@ -342,6 +342,17 @@ test("messages need text or drafts, except exit, and drafts need a string id and
   assert.equal(later.body.kind, "chat");
 });
 
+test("a known-kind draft of the wrong shape is refused before the log is written; a malformed wrapper is kept", async () => {
+  const bad = { id: "bad-shape", kind: "choice", name: "nav", value: "Tabs", written: [] };
+  const refused = await call("POST", "/api/messages", { body: { text: "x", drafts: [bad] } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error, /^Draft bad-shape is not a well-formed choice draft\.$/);
+  assert.equal(existsSync(join(dir, "log.jsonl")), false, "nothing was written");
+  const kept = await call("POST", "/api/messages", { body: { text: "x", drafts: [{ id: "bad-shape", kind: "malformed", draft: bad }] } });
+  assert.equal(kept.status, 201);
+  assert.deepEqual(kept.body.drafts[0].draft, bad);
+});
+
 test("wait blocks until a message arrives", async () => {
   const pending = call("GET", "/api/agent/wait");
   await new Promise((r) => setTimeout(r, 50));

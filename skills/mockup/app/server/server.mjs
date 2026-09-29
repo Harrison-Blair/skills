@@ -8,6 +8,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
+import { malformed } from "../shell/shape.js";
 import { TYPES, pageHeaders, servePage, sessionFile } from "./pages.mjs";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,7 +168,8 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
   function draftsError(drafts) {
     if (!Array.isArray(drafts)) return "drafts must be a list";
     if (drafts.some((d) => typeof d?.id !== "string" || typeof d?.kind !== "string")) return "every draft needs a string id and kind";
-    return null;
+    const bad = drafts.find(malformed);
+    return bad ? `Draft ${bad.id} is not a well-formed ${bad.kind} draft.` : null;
   }
 
   async function handle(req, res, url, headers) {

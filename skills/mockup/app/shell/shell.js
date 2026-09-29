@@ -5,6 +5,7 @@ import { renderCompare } from "./compare.js";
 import { mountAnnotate } from "./annotate.js";
 import { holdReload } from "./reload.js";
 import { renderReview } from "./review.js";
+import { malformed } from "./shape.js";
 
 const $ = (id) => document.getElementById(id);
 const WIDTHS = { phone: 390, tablet: 820, desktop: 1280 };
@@ -182,7 +183,9 @@ addEventListener("message", (e) => {
   if (!data || data.mockup !== 1) return;
   if (data.type === "ready") restore();
   else if (data.type === "draft" && typeof data.draft?.id === "string" && typeof data.draft.kind === "string") {
-    drafts.set(data.draft.id, data.draft);
+    // A known kind of the wrong shape is kept whole, wrapped, so it can still be sent.
+    const draft = malformed(data.draft) ? { id: data.draft.id, kind: "malformed", draft: data.draft } : data.draft;
+    drafts.set(draft.id, draft);
     renderDrafts();
   } else if (data.type === "undraft") {
     drafts.delete(data.id);
