@@ -7,6 +7,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 import { createServer } from "../server/server.mjs";
 
 const MAIN = join(dirname(fileURLToPath(import.meta.url)), "..", "server", "main.mjs");
@@ -209,7 +210,6 @@ test("a /d/ server error keeps the page headers, however the path is written", {
 
 // Real Chromium, so the check is what a browser parses, not what the text looks like.
 test("the page script runs exactly once in Chromium, wherever the page says </body>", async () => {
-  const { chromium } = await import("/home/penguin/source/skills/skills/mockup/app/node_modules/playwright/index.mjs");
   writeFileSync(join(fixtures, "kit", "core.js"), "window.kitRuns = (window.kitRuns || 0) + 1;");
   const cases = {
     "normal.html": "<!doctype html><html><head><title>n</title></head><body><p>x</p><script>window.parsed = 1;</script></body>",

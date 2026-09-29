@@ -56,12 +56,12 @@ test("the Pi extension hands browser messages to the agent, once each, and stops
     assert.equal(JSON.parse(readFileSync(link, "utf8")).designDir, designDir, "start leaves a link for this Pi session");
 
     const s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
-    const post = (text) => fetch(new URL("/api/messages", s.url), { method: "POST", headers: { authorization: `Bearer ${s.token}`, "content-type": "application/json" }, body: JSON.stringify({ text }) });
+    const post = (text) => fetch(new URL("/api/messages", s.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
 
     await post("make it calmer");
     await until(() => pi.sent.length === 1, "the first message");
     assert.match(pi.sent[0].text, /make it calmer/);
-    assert.match(pi.sent[0].text, /Do not run `mockup wait`/);
+    assert.match(pi.sent[0].text, /then end your turn\.$/);
     assert.equal(pi.sent[0].options, undefined, "an idle agent gets it at once");
 
     // Still unanswered, it is not handed over again; a busy agent gets the

@@ -6,8 +6,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// Absolute path because a fresh worktree has no node_modules.
-import { chromium } from "/home/penguin/source/skills/skills/mockup/app/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..", "kit");
 const OPTIONS = `

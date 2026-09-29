@@ -7,9 +7,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-// Absolute path because a fresh worktree has no node_modules; switch to
-// `import { chromium } from "playwright"` once merged.
-import { chromium } from "/home/penguin/source/skills/skills/mockup/app/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const SHELL = join(dirname(fileURLToPath(import.meta.url)), "..", "shell");
 const TYPES = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript" };
