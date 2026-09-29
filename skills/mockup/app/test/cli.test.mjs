@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { format } from "../lib/format.mjs";
 
@@ -86,7 +86,7 @@ test("start --once makes a temp session folder and prints the three lines", () =
   assert.equal(out, [
     `open: http://127.0.0.1:${s.port}/`,
     `dir: ${dir}`,
-    `next: write a page under ${join(dir, "pages")}/, then run: mockup show pages/<file>.html --dir ${dir}`,
+    `next: write a page under ${join(dir, "pages")}${sep}, then run: mockup show pages/<file>.html --dir ${dir}`,
     "",
   ].join("\n"));
   assert.ok(dir.startsWith(tmpdir()), dir);
