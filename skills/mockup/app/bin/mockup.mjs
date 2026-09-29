@@ -285,7 +285,7 @@ const commands = {
 const [command, ...argv] = process.argv.slice(2);
 // shot and handoff read rounds, which this version no longer has.
 if (command === "shot" || command === "handoff") fail(`${command} is not available yet in this version`);
-if (!commands[command]) fail("usage: mockup start|show|wait|say|status|stop (see the header of bin/mockup.mjs)");
+if (!Object.hasOwn(commands, command)) fail("usage: mockup start|show|wait|say|status|stop (see the header of bin/mockup.mjs)");
 const [run, options, allowPositionals = false] = commands[command];
 let parsed;
 try {
