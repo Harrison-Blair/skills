@@ -17,8 +17,10 @@ const CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'u
 
 // The framed page: posts `ready`, then one draft, and records what the shell sends it.
 const PAGE = `<!doctype html><title>Ask</title><h1>Which navigation?</h1>
+<button id="left" style="position:absolute;left:0;top:80px">Left edge</button>
 <script>
 window.got = [];
+document.getElementById("left").addEventListener("click", () => { window.clicked = true; });
 addEventListener("message", (e) => { if (e.source === parent) got.push(e.data); });
 parent.postMessage({ mockup: 1, type: "ready", path: "pages/ask.html", title: "Ask" }, "*");
 parent.postMessage({ mockup: 1, type: "draft", draft: { id: "choice:nav", kind: "choice", name: "nav",
@@ -93,8 +95,8 @@ beforeEach(() => {
 
 // Opens the shell and waits until the framed page's first draft is listed.
 // Page errors and console errors (such as CSP violations) fail the test on close.
-async function open() {
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+async function open(width = 1200) {
+  const page = await browser.newPage({ viewport: { width, height: 800 } });
   const errors = [];
   page.on("pageerror", (err) => errors.push(err.message));
   page.on("console", (msg) => msg.type() === "error" && errors.push(msg.text()));
@@ -222,5 +224,43 @@ test("7: the top bar shows the agent status and a stalled warning", async () => 
   emit("agent", { listening: false, stalled: false });
   await page.getByText("Agent is not listening").waitFor();
   assert.equal(await page.locator(".banner.warn").count(), 0);
+  await page.close();
+});
+
+for (const [width, device] of [[1200, "desktop"], [400, "tablet"]]) {
+  test(`8: at ${width}px with device ${device} the page's left edge can be clicked`, async () => {
+    state.showing.device = device;
+    const { page, frame } = await open(width);
+    await frame.locator("#left").click({ timeout: 2000 });
+    assert.equal(await frame.evaluate(() => window.clicked), true);
+    const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.equal(sideways, 0, "the shell page never scrolls sideways");
+    await page.close();
+  });
+}
+
+test("8: a frame narrower than the stage stays centered", async () => {
+  state.showing.device = "phone";
+  const { page } = await open();
+  const gap = await page.evaluate(() => {
+    const stage = document.querySelector(".stage").getBoundingClientRect();
+    const frame = document.querySelector("iframe").getBoundingClientRect();
+    return { left: frame.left - stage.left, right: stage.right - frame.right, width: frame.width };
+  });
+  assert.equal(gap.width, 390);
+  assert.ok(gap.left > 100 && Math.abs(gap.left - gap.right) <= 1, `centered: ${JSON.stringify(gap)}`);
+  await page.close();
+});
+
+test("9: drafts named __proto__ and constructor are restored after ready", async () => {
+  const { page, frame } = await open();
+  for (const name of ["__proto__", "constructor"]) {
+    await toShell(frame, { type: "draft", draft: { id: `choice:${name}`, kind: "choice", name, value: ["A"], written: [] } });
+  }
+  await page.locator(".drafts .draft").nth(2).waitFor();
+  await toShell(frame, { type: "ready", path: "pages/ask.html", title: "Ask" });
+  await frame.waitForFunction(() => got.filter((m) => m.type === "restore").length === 2);
+  const keys = await frame.evaluate(() => Object.keys(got.filter((m) => m.type === "restore")[1].values).sort());
+  assert.deepEqual(keys, ["__proto__", "constructor", "nav"]);
   await page.close();
 });

@@ -39,8 +39,8 @@ svg.i { width: 16px; height: 16px; flex: none; }
 .canvas { background: var(--bg); padding: 16px; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 13px; color: var(--muted); }
 .bar .path { font-family: var(--mono); color: var(--ink); margin-right: auto; overflow-wrap: anywhere; }
-.stage { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; }
-.stage iframe { display: block; width: 100%; height: 100%; min-height: 360px; flex: none; border: 1px solid var(--line); border-radius: 4px; background: #ffffff; }
+.stage { flex: 1; min-height: 0; overflow: auto; display: flex; }
+.stage iframe { display: block; margin-inline: auto; width: 100%; height: 100%; min-height: 360px; flex: none; border: 1px solid var(--line); border-radius: 4px; background: #ffffff; }
 .empty { color: var(--muted); font-size: 14px; margin: 0; }
 
 .side { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; }

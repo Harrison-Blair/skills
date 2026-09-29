@@ -22,8 +22,8 @@ function post(data) {
 }
 
 function restore() {
-  const values = {};
-  for (const d of drafts.values()) if (typeof d.name === "string") values[d.name] = d;
+  const named = [...drafts.values()].filter((d) => typeof d.name === "string");
+  const values = Object.fromEntries(named.map((d) => [d.name, d]));
   post({ type: "restore", values });
 }
 
