@@ -23,7 +23,8 @@ With the committed `config.json`, Claude renders:
 
 ```text
 Opus: high | ctx 24k/200k | tok 10k in / 1k out | $1.23 | +156 -23
-skills | main | 5h: 20% 3:05pm | w: 75% Thu 9:30am | status work | cache: warm until 3:05pm
+skills | main | 5h: 20% 3:05pm | w: 75% Thu 9:30am
+status work | cache: warm until 3:05pm
 ```
 
 | Key | Meaning |
