@@ -29,7 +29,7 @@
       for (const name of Object.keys(state)) delete state[name];
       if (data.type === "restore") Object.assign(state, data.values);
       window.dispatchEvent(new Event("mockup:" + data.type));
-      resolveReady();
+      if (data.type === "restore") resolveReady();
     }
   });
 

@@ -36,7 +36,12 @@ before(async () => {
         <script>
           const frame = document.querySelector("iframe");
           window.received = [];
-          addEventListener("message", (event) => { if (event.source === frame.contentWindow) received.push(event.data); });
+          const clearOnReady = ${url.searchParams.has("clear")};
+          addEventListener("message", (event) => {
+            if (event.source !== frame.contentWindow) return;
+            received.push(event.data);
+            if (clearOnReady && event.data.type === "ready") frame.contentWindow.postMessage({ mockup: 1, type: "clear" }, "*");
+          });
           window.toChild = (data) => frame.contentWindow.postMessage(data, "*");
         </script>`);
     }
@@ -61,11 +66,11 @@ after(async () => {
 });
 
 // Opens the parent page with the child framed and waits for its ready message.
-async function open(page = "pages/ask.html") {
+async function open(page = "pages/ask.html", query = "") {
   const tab = await browser.newPage();
   const errors = [];
   tab.on("pageerror", (error) => errors.push(error));
-  await tab.goto(`${base}/?page=${encodeURIComponent(page)}`);
+  await tab.goto(`${base}/?page=${encodeURIComponent(page)}${query}`);
   await tab.waitForFunction(() => received.some((m) => m.type === "ready"));
   const frame = tab.frames()[1];
   return { tab, frame, errors, rows: frame.locator("mockup-option") };
@@ -157,12 +162,22 @@ test("6: clear resets the element and posts nothing", async () => {
   await rows.nth(1).click();
   await frame.getByLabel("Something else").fill("maybe");
   await tab.waitForFunction(() => received.at(-1).draft?.written?.[0] === "maybe");
+  await tab.evaluate(() => toChild({ mockup: 1, type: "restore", values: { nav: { value: ["Sidebar"], written: ["maybe"] } } }));
+  await frame.waitForFunction(() => window.mockup.state.nav);
   const count = await received(tab);
   await tab.evaluate(() => toChild({ mockup: 1, type: "clear" }));
   await frame.waitForFunction(() => !document.querySelector("mockup-option[aria-checked=true]"));
   assert.equal(await frame.getByLabel("Something else").inputValue(), "");
+  assert.deepEqual(await frame.evaluate(() => ({ ...window.mockup.state })), {});
   await tab.waitForTimeout(200);
   assert.equal(await received(tab), count);
+  await tab.close();
+});
+
+test("6: an early clear does not resolve mockup.ready before the 300 ms fallback", async () => {
+  const { tab, frame } = await open("pages/ask.html", "&clear");
+  const resolvedAt = await frame.evaluate(() => window.mockup.ready.then(() => performance.now()));
+  assert.ok(resolvedAt >= 300, `ready resolved at ${Math.round(resolvedAt)} ms`);
   await tab.close();
 });
 
