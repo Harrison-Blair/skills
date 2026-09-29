@@ -38,6 +38,39 @@ function session(designDir) {
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
 }
 
+// True when the server at s.port answers /api/ping with s.id. A pid proves
+// nothing: after a crash it may belong to any process.
+function answers(s) {
+  return new Promise((ok) => {
+    if (typeof s?.id !== "string" || !Number.isInteger(s.port)) return ok(false);
+    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => {
+        try {
+          ok(JSON.parse(body).id === s.id);
+        } catch {
+          ok(false);
+        }
+      });
+    });
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => ok(false));
+    req.end();
+  });
+}
+
+// The recorded session when its server confirms it, else null.
+async function confirmed(designDir) {
+  let s;
+  try {
+    s = session(designDir);
+  } catch {
+    return null;
+  }
+  return (await answers(s)) ? s : null;
+}
+
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -67,8 +100,8 @@ function findDesignDir(flags) {
 const urlOf = (s) => `http://127.0.0.1:${s.port}/`;
 
 async function api(designDir, method, path, body) {
-  const s = session(designDir);
-  if (!s || !alive(s.pid)) fail(s && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
+  const s = await confirmed(designDir);
+  if (!s) fail(session(designDir) && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
   // node:http rather than fetch: fetch abandons any response slower than five
   // minutes, and `wait` must be able to block for hours.
   const { status, data } = await new Promise((ok) => {
@@ -123,8 +156,8 @@ async function start(flags) {
   }
   mkdirSync(join(designDir, ".runtime"), { recursive: true });
 
-  const existing = session(designDir);
-  if (existing && alive(existing.pid)) {
+  const existing = await confirmed(designDir);
+  if (existing) {
     if (existing.harness === harness && (existing.thread ?? null) === thread) return printStart(existing, designDir);
     // A new agent session takes the design over; messages are kept on disk.
     await stop({ dir: designDir, quiet: true });
@@ -146,17 +179,20 @@ async function start(flags) {
   closeSync(log);
 
   // Two starts at once race for the session file; the loser exits, and this
-  // command then reports whichever server won.
+  // command then reports whichever server won. A stale file stays until the
+  // new server replaces it.
   let exited = false;
   child.on("exit", () => (exited = true));
   const deadline = Date.now() + 15000;
   let s = null;
   while (Date.now() < deadline) {
-    s = session(designDir);
-    if (s?.pid === child.pid || (exited && s && alive(s.pid))) break;
+    if (exited || session(designDir)?.pid === child.pid) {
+      s = await confirmed(designDir);
+      if (s || exited) break;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!s || !alive(s.pid)) {
+  if (!s) {
     const log = join(designDir, ".runtime", "server.log");
     const denied = existsSync(log) && /listen EPERM/.test(readFileSync(log, "utf8"));
     fail(denied ? SANDBOX_HINT : `server did not start; see ${log}`);
@@ -231,34 +267,53 @@ async function status(flags) {
   console.log(`showing: ${showing?.pages?.join(", ") ?? "nothing"}`);
 }
 
-// Returns once the server has exited, so a start right after cannot collide
-// with it.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Asks the server to stop and returns once it has exited, so a start
+// right after cannot collide with it. Only a server that has just confirmed
+// its identity is ever signalled, and only when the request did not stop it.
 async function stop(flags) {
   const designDir = findDesignDir(flags);
-  const s = session(designDir);
-  if (s && alive(s.pid)) {
-    process.kill(s.pid, "SIGTERM");
-    for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 50));
-    // On Windows the signal ends the server at once, before it can clean up;
-    // release what it still holds.
-    if (!alive(s.pid)) {
-      const file = join(designDir, ".runtime", "session.json");
-      try {
-        if (JSON.parse(readFileSync(file, "utf8")).pid === s.pid) rmSync(file, { force: true });
-      } catch {
-        // Already gone.
+  const file = join(designDir, ".runtime", "session.json");
+  let recorded = null;
+  try {
+    recorded = session(designDir);
+  } catch {
+    // Unreadable: stale.
+  }
+  const s = await confirmed(designDir);
+  if (s) {
+    await api(designDir, "POST", "/api/agent/stop");
+    // The pid is the confirmed server's own, so waiting on it is safe.
+    for (const deadline = Date.now() + 5000; alive(s.pid) && Date.now() < deadline; ) await sleep(50);
+    if (alive(s.pid) && (await answers(s))) {
+      process.kill(s.pid, "SIGTERM");
+      for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await sleep(50);
+      // On Windows the signal ends the server at once, before it can clean up;
+      // release what it still holds.
+      if (!alive(s.pid)) {
+        try {
+          if (JSON.parse(readFileSync(file, "utf8")).id === s.id) rmSync(file, { force: true });
+        } catch {
+          // Already gone.
+        }
       }
     }
+  } else {
+    // Nothing answers for this session: the file is stale, and its pid may
+    // belong to anything, so nothing is signalled.
+    rmSync(file, { force: true });
   }
   // The Pi extension stops listening once its link is gone.
-  if (s?.harness === "pi" && s.thread) {
+  const known = s ?? recorded;
+  if (known?.harness === "pi" && known.thread) {
     try {
-      if (JSON.parse(readFileSync(piLink(s.thread), "utf8")).designDir === designDir) rmSync(piLink(s.thread), { force: true });
+      if (JSON.parse(readFileSync(piLink(known.thread), "utf8")).designDir === designDir) rmSync(piLink(known.thread), { force: true });
     } catch {
       // No link.
     }
   }
-  if (!flags.quiet) console.log(`stopped ${designDir}`);
+  if (!flags.quiet) console.log(`stopped ${designDir}${s ? "" : " (no server was running)"}`);
 }
 
 // Inside Codex's sandbox the server can neither listen nor be reached, and

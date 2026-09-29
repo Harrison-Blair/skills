@@ -37,10 +37,11 @@ const ROUTES = {
   "/api/agent/wait": "agent",
   "/api/agent/say": "agent",
   "/api/agent/show": "agent",
+  "/api/agent/stop": "agent",
 };
 const PREFIXES = { "/shell/": "browser", "/d/": "page" };
 
-export function createServer({ dir, session, stallMs = STALL_MS, deliver = null, shellDir = join(APP, "shell"), kitDir = join(APP, "kit") }) {
+export function createServer({ dir, session, stallMs = STALL_MS, deliver = null, stop = null, shellDir = join(APP, "shell"), kitDir = join(APP, "kit") }) {
   const store = new Store(join(dir, "log.jsonl"));
   const sse = new Set();
   const waiters = new Set();
@@ -276,6 +277,11 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
         touch();
         return send(res, 200, { ok: true });
       }
+
+      // `mockup stop`: answer first, then stop.
+      case "POST /api/agent/stop":
+        if (stop) res.once("finish", stop);
+        return send(res, 200, { ok: true });
 
       default:
         return send(res, ROUTES[pathname] ? 405 : 404, { error: ROUTES[pathname] ? "method not allowed" : "not found" }, headers);

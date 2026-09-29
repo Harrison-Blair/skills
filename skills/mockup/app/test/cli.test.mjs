@@ -3,7 +3,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +245,103 @@ test("with Codex, the server queues each browser message into the agent's sessio
   assert.equal(s2.thread, "thread-456");
   assert.notEqual(s2.pid, s.pid);
   assert.equal(alive(s.pid), false);
+});
+
+// A process that is not a mockup server, and a port where nothing answers.
+async function stranger() {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  strangers.push(child);
+  const probe = createServer();
+  await new Promise((ok) => probe.listen(0, "127.0.0.1", ok));
+  const port = probe.address().port;
+  await new Promise((ok) => probe.close(ok));
+  return { pid: child.pid, port };
+}
+const strangers = [];
+after(() => {
+  for (const child of strangers) child.kill();
+});
+
+// A session.json left behind, naming a pid and port that are not its server.
+function staleSession(dir, { pid, port, id = "stale-id", harness = "claude", thread = null }) {
+  mkdirSync(join(dir, ".runtime"), { recursive: true });
+  mkdirSync(join(dir, "pages"), { recursive: true });
+  const s = { id, pid, port, url: `http://127.0.0.1:${port}/`, kind: "once", name: null, dir, harness, thread, startedAt: new Date().toISOString() };
+  writeFileSync(join(dir, ".runtime", "session.json"), JSON.stringify(s));
+  return s;
+}
+
+test("start with a session.json naming a live stranger starts a real server", async () => {
+  const other = await stranger();
+  const repo = temp("mockup-stale-repo-");
+  const design = join(repo, ".design", "d");
+  staleSession(design, other);
+  const again = mockup(["start", "--design", "d", "--repo", repo, "--no-open"]);
+  started.add(design);
+  assert.equal(again.code, 0, again.err);
+  const s = session(design);
+  assert.notEqual(s.id, "stale-id", "a new server wrote its own session.json");
+  assert.equal(again.out.match(/^open: (\S+)$/m)[1], `http://127.0.0.1:${s.port}/`);
+  assert.notEqual(s.port, other.port);
+  assert.equal(mockup(["status", "--dir", design]).code, 0);
+  assert.equal(alive(other.pid), true);
+});
+
+test("stop with a session.json naming a live stranger signals nothing", async () => {
+  const other = await stranger();
+  const dir = temp("mockup-stale-");
+  staleSession(dir, other);
+  const r = mockup(["stop", "--dir", dir]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, `stopped ${dir} (no server was running)\n`);
+  assert.equal(existsSync(join(dir, ".runtime", "session.json")), false, "the stale file is removed");
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal(alive(other.pid), true, "the unrelated process is still alive");
+});
+
+test("a port where another session's server answers is neither reused nor stopped", async () => {
+  const other = await stranger();
+  const { dir: otherDir } = start(["--once"]);
+  const theirs = session(otherDir);
+  const before = readFileSync(join(otherDir, ".runtime", "session.json"));
+  const repo = temp("mockup-stale-repo-");
+  const dir = join(repo, ".design", "d");
+  staleSession(dir, { pid: other.pid, port: theirs.port });
+
+  const stopped = mockup(["stop", "--dir", dir]);
+  assert.equal(stopped.out, `stopped ${dir} (no server was running)\n`);
+  staleSession(dir, { pid: other.pid, port: theirs.port });
+  const r = mockup(["start", "--design", "d", "--repo", repo, "--no-open"]);
+  started.add(dir);
+  assert.equal(r.code, 0, r.err);
+  assert.notEqual(session(dir).port, theirs.port, "not reused");
+  assert.equal(alive(theirs.pid), true, "the other server still runs");
+  assert.equal(alive(other.pid), true);
+  assert.deepEqual(readFileSync(join(otherDir, ".runtime", "session.json")), before, "its session.json is untouched");
+  assert.match(mockup(["status", "--dir", otherDir]).out, /server: running/);
+});
+
+test("a harness takeover over a stale session.json signals nothing", async () => {
+  const other = await stranger();
+  const repo = temp("mockup-stale-repo-");
+  const dir = join(repo, ".design", "d");
+  staleSession(dir, { ...other, harness: "claude" });
+  const r = mockup(["start", "--design", "d", "--repo", repo, "--no-open", "--harness", "codex", "--thread", "t-9"]);
+  started.add(dir);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual([session(dir).harness, session(dir).thread], ["codex", "t-9"]);
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal(alive(other.pid), true, "the unrelated process is still alive");
+});
+
+test("stop asks the server to stop; it removes its session.json and exits", () => {
+  const { dir } = start(["--once"]);
+  const s = session(dir);
+  const r = mockup(["stop", "--dir", dir]);
+  assert.equal(r.out, `stopped ${dir}\n`);
+  assert.equal(alive(s.pid), false);
+  assert.equal(existsSync(join(dir, ".runtime", "session.json")), false);
+  assert.match(readFileSync(join(dir, ".runtime", "server.log"), "utf8"), /stop requested/);
 });
 
 test("inside Codex's sandbox, a server the command cannot see gets the way out", () => {

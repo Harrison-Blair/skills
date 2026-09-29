@@ -24,7 +24,10 @@ const file = join(runtime, "session.json");
 // Codex is woken by the server; Claude and Pi listen with `mockup wait`.
 const deliver = harness === "codex" && thread ? codexDeliver({ thread }) : null;
 const id = randomUUID();
-const app = createServer({ dir, session: { id, kind, name: env.MOCKUP_NAME || null, harness }, deliver });
+const app = createServer({ dir, session: { id, kind, name: env.MOCKUP_NAME || null, harness }, deliver, stop: () => {
+  console.log("stop requested");
+  shutdown();
+} });
 const port = await app.listen(0);
 
 const session = {

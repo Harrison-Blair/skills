@@ -12,7 +12,7 @@ import { createServer } from "../server/server.mjs";
 
 const MAIN = join(dirname(fileURLToPath(import.meta.url)), "..", "server", "main.mjs");
 const SESSION = { id: "session-id", kind: "once", name: null, harness: "claude" };
-let app, port, dir, fixtures;
+let app, port, dir, fixtures, stops;
 const temps = [];
 const temp = (prefix) => {
   temps.push(mkdtempSync(join(tmpdir(), prefix)));
@@ -31,7 +31,8 @@ beforeEach(async () => {
   writeFileSync(join(fixtures, "shell", "app.js"), "shell();");
   writeFileSync(join(fixtures, "secret.txt"), "SECRET");
   page("pages/ask.html", "<html><body><p>Ask</p></body></html>");
-  app = createServer({ dir, session: SESSION, stallMs: 200, shellDir: join(fixtures, "shell"), kitDir: join(fixtures, "kit") });
+  stops = 0;
+  app = createServer({ dir, session: SESSION, stallMs: 200, shellDir: join(fixtures, "shell"), kitDir: join(fixtures, "kit"), stop: () => stops++ });
   port = await app.listen(0);
 });
 afterEach(() => app.close());
@@ -108,6 +109,18 @@ test("T3: agent routes refuse browser requests before any side effect", async ()
   }
   assert.equal(existsSync(join(dir, "log.jsonl")), false);
   assert.equal((await call("GET", "/api/state")).body.agent.listening, false);
+});
+
+test("the stop route is for the CLI only, and answers before stopping", async () => {
+  for (const headers of [{ "sec-fetch-site": "same-origin" }, { "sec-fetch-mode": "cors" }, { origin: `http://127.0.0.1:${port}` }, { origin: "null" }, FRAMED]) {
+    assert.equal((await call("POST", "/api/agent/stop", { headers })).status, 403, JSON.stringify(headers));
+  }
+  assert.equal((await call("GET", "/api/agent/stop")).status, 405);
+  assert.equal(stops, 0);
+  const res = await call("POST", "/api/agent/stop");
+  assert.deepEqual([res.status, res.body], [200, { ok: true }]);
+  for (let i = 0; i < 20 && !stops; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(stops, 1);
 });
 
 test("browser routes refuse framed requests; page routes accept them", async () => {
