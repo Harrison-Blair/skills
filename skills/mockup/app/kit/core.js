@@ -33,7 +33,7 @@
     }
   });
 
-  const announce = () => post({ type: "ready", path: location.pathname.replace(/^\/d\//, ""), title: document.title });
+  const announce = () => post({ type: "ready", path: decodeURIComponent(location.pathname.replace(/^\/d\//, "")), title: document.title });
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", announce);
   else announce();
 })();

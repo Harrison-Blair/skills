@@ -22,6 +22,7 @@ const PAGES = {
     <mockup-choice name="nav" label="Which navigation?" write-in>${OPTIONS}</mockup-choice>`,
   "pages/multi.html": `<title>Multi</title>
     <mockup-choice name="nav" label="Which navigation?" multiple>${OPTIONS}</mockup-choice>`,
+  "pages/order page.html": `<title>Spaced</title>`,
 };
 
 let server, base, browser;
@@ -43,7 +44,7 @@ before(async () => {
       res.setHeader("content-type", "text/javascript");
       return res.end(["core.js", "kit.js", "annotate.js"].map((file) => readFileSync(join(KIT, file), "utf8")).join(""));
     }
-    const body = PAGES[url.pathname.replace(/^\/d\//, "")];
+    const body = PAGES[decodeURIComponent(url.pathname.replace(/^\/d\//, ""))];
     if (!body) return res.writeHead(404).end();
     res.setHeader("content-type", "text/html");
     res.setHeader("content-security-policy", `sandbox allow-scripts allow-forms; script-src ${base} 'unsafe-inline'`);
@@ -64,7 +65,7 @@ async function open(page = "pages/ask.html") {
   const tab = await browser.newPage();
   const errors = [];
   tab.on("pageerror", (error) => errors.push(error));
-  await tab.goto(`${base}/?page=${page}`);
+  await tab.goto(`${base}/?page=${encodeURIComponent(page)}`);
   await tab.waitForFunction(() => received.some((m) => m.type === "ready"));
   const frame = tab.frames()[1];
   return { tab, frame, errors, rows: frame.locator("mockup-option") };
@@ -82,6 +83,12 @@ test("1: posts ready with the page path and title", async () => {
   const { tab } = await open();
   const ready = await tab.evaluate(() => received[0]);
   assert.deepEqual(ready, { mockup: 1, type: "ready", path: "pages/ask.html", title: "Order page" });
+  await tab.close();
+});
+
+test("1: ready.path is decoded so it matches the shown page path", async () => {
+  const { tab } = await open("pages/order page.html");
+  assert.equal(await tab.evaluate(() => received[0].path), "pages/order page.html");
   await tab.close();
 });
 
