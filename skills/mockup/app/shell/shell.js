@@ -49,7 +49,7 @@ function applyShowing(showing, reload) {
   frame = document.createElement("iframe");
   frame.setAttribute("sandbox", "allow-scripts allow-forms");
   frame.setAttribute("title", showing.title || page);
-  frame.setAttribute("src", `/d/${page}`);
+  frame.setAttribute("src", `/d/${page.split("/").map(encodeURIComponent).join("/")}`);
   framePage = page;
   stage.replaceChildren(frame);
   setDevice(showing.device);

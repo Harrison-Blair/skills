@@ -171,3 +171,31 @@ test("a draft removed under Unsent is cleared in the page and not sent", { timeo
     "",
   ].join("\n"));
 });
+
+test("pages whose names need escaping in a URL render, report their path, and are named in feedback", { timeout: 60_000 }, async () => {
+  const names = ["ask#1", "two words", "100%", "café", ...(process.platform === "win32" ? [] : ["what?"])];
+  const { dir, url } = await startOnce();
+  const page = await browser.newPage();
+  // Records the ready messages the shell receives from its frame.
+  await page.addInitScript(() => {
+    if (window !== top) return;
+    window.readyPaths = [];
+    addEventListener("message", (e) => e.data?.type === "ready" && window.readyPaths.push(e.data.path));
+  });
+  await page.goto(url);
+  await page.waitForFunction(() => document.body.dataset.connected === "1");
+  for (const [i, name] of names.entries()) {
+    const path = `pages/${name}.html`;
+    writeFileSync(join(dir, ...path.split("/")), ASK);
+    assert.equal(await mockup("show", path, "--dir", dir), `showing: ${path}\nnext: run \`mockup wait\` in the background\n`);
+    await page.frameLocator("iframe").locator('mockup-option[value="Sidebar"]').click();
+    await page.waitForFunction((n) => window.readyPaths.length === n, i + 1);
+    assert.equal(await page.evaluate(() => window.readyPaths.at(-1)), path);
+    await page.getByText("Unsent (1)").waitFor();
+    await page.getByRole("button", { name: "Send to agent" }).click();
+    const out = await mockup("wait", "--dir", dir);
+    assert.match(out, new RegExp(`^--- #${2 * i + 1} feedback on ${path.replace(/[?.]/g, "\\$&")}\n\\* chose "Sidebar" for nav`, "m"));
+    await mockup("say", "--dir", dir, "ok");
+  }
+  await page.close();
+});
