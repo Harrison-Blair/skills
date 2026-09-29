@@ -5,7 +5,7 @@ description: Use only when the user explicitly invokes it. Run the orchestrate s
 
 # Orchestrate with Fledge
 
-Load [orchestrate](../orchestrate/SKILL.md) and follow it; it stays authoritative for the coordinating role, briefs, delegation, verification, repairs, decisions, and reports. This skill only replaces its mechanics: where orchestrate says to spawn, message, track, wait for, or stop agents, use Fledge. Skip orchestrate's harness notes except for a step Fledge cannot perform.
+Load [orchestrate](../orchestrate/SKILL.md) and follow it; it stays authoritative for the coordinating role, briefs, delegation, verification, repairs, decisions, and reports. This skill only replaces its mechanics: where orchestrate says to spawn, message, track, wait for, or stop agents, use Fledge.
 
 ## Preconditions
 
@@ -36,7 +36,7 @@ Commands change between Fledge versions. Before first use, read `fledge agent --
 
 - Write briefs as Fledge task briefs; the task record is the work ledger orchestrate requires. Keep tasks open until verified, and cancel abandoned work with `fledge task cancel`.
 - Worker messages arrive with a `ᛉ fledge message from ...` header. Reply with the header's reply command, and address workers by name.
-- Run a feature's verifier in that feature's checkout (`fledge agent spawn --worktree <checkout path>`). The implementer commits and leaves a clean tree before verification and makes no edits while it runs. The verifier undoes experimental changes, confirms a clean `git status`, and runs `fledge task verify` only when no findings remain, naming the checked commit when it verifies again after repairs.
+- Run a feature's verifier in that feature's checkout (`fledge agent spawn --worktree <checkout path>`). The implementer commits and leaves a clean tree before verification and makes no edits while it runs. The verifier undoes experimental changes, confirms a clean `git status`, and runs `fledge task verify` only when no failing findings remain, naming the checked commit when it verifies again after repairs.
 - Spawn prompts start with a sender header, so ask a worker in plain words to use a skill; a leading slash command will not run. Pass absolute paths to `--cwd`.
 - Stop only the workers you spawned, after their results and any verification are read.
 - When Fledge fails or lacks a capability, fall back to the harness tool for that step, tell the user, and record the friction where the repository asks for it.
