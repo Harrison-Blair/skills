@@ -262,3 +262,40 @@ test("9: drafts named __proto__ and constructor are restored after ready", async
   assert.deepEqual(keys, ["__proto__", "constructor", "nav"]);
   await page.close();
 });
+
+test("10: Enter in the composer sends, and does nothing while Send is disabled", async () => {
+  const { page, frame } = await open();
+  await toShell(frame, { type: "undraft", id: "choice:nav" });
+  await page.locator(".drafts .draft").waitFor({ state: "detached" });
+  await page.getByLabel("Message").press("Enter");
+  await page.waitForTimeout(200);
+  assert.equal(posts.length, 0, "nothing to send");
+  await page.getByLabel("Message").fill("Keep it simple.");
+  await page.getByLabel("Message").press("Enter");
+  await page.waitForFunction(() => document.getElementById("text").value === "");
+  assert.deepEqual(posts, [{ text: "Keep it simple.", kind: "chat", page: "pages/ask.html", drafts: [] }]);
+  await page.close();
+});
+
+test("10: Shift+Enter in the composer inserts a new line and does not send", async () => {
+  const { page } = await open();
+  const text = page.getByLabel("Message");
+  await text.fill("line one");
+  await text.press("Shift+Enter");
+  await text.pressSequentially("line two");
+  await page.waitForTimeout(200);
+  assert.equal(await text.inputValue(), "line one\nline two");
+  assert.equal(posts.length, 0);
+  await page.close();
+});
+
+test("10: Enter while an input method is composing does not send", async () => {
+  const { page } = await open();
+  const text = page.getByLabel("Message");
+  await text.fill("にほん");
+  await text.evaluate((el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", isComposing: true, bubbles: true, cancelable: true })));
+  await page.waitForTimeout(200);
+  assert.equal(posts.length, 0);
+  assert.equal(await text.inputValue(), "にほん");
+  await page.close();
+});

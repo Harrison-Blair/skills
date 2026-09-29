@@ -192,6 +192,12 @@ addEventListener("message", (e) => {
 
 $("send").prepend(icon("send"));
 $("text").addEventListener("input", updateSend);
+// Enter sends; Shift+Enter and Enter that ends an input method's composition do not.
+$("text").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  $("composer").requestSubmit();
+});
 $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
   if (!$("send").disabled) send();
