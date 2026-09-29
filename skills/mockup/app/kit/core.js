@@ -27,7 +27,12 @@
     if (!framed || event.source !== window.parent || !data || data.mockup !== 1) return;
     if (data.type === "restore" || data.type === "clear") {
       for (const name of Object.keys(state)) delete state[name];
-      if (data.type === "restore") Object.assign(state, data.values);
+      // Defined, not assigned: a draft named __proto__ must be a key, not the prototype.
+      if (data.type === "restore") {
+        for (const [name, value] of Object.entries(data.values ?? {})) {
+          Object.defineProperty(state, name, { value, enumerable: true, writable: true, configurable: true });
+        }
+      }
       window.dispatchEvent(new Event("mockup:" + data.type));
       if (data.type === "restore") resolveReady();
     }

@@ -44,7 +44,10 @@
       root.innerHTML = choiceTemplate;
       this.rows = root.querySelector(".rows");
       this.input = root.querySelector("input");
-      this.restore = () => this.apply(window.mockup.state[this.getAttribute("name")]);
+      this.restore = () => {
+        const name = this.getAttribute("name");
+        if (Object.hasOwn(window.mockup.state, name)) this.apply(window.mockup.state[name]);
+      };
       this.clear = () => this.apply({});
       root.querySelector("slot").addEventListener("slotchange", () => this.render());
       this.input.addEventListener("input", () => this.post());
