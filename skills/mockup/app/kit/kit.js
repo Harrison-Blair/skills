@@ -44,9 +44,10 @@
       root.innerHTML = choiceTemplate;
       this.rows = root.querySelector(".rows");
       this.input = root.querySelector("input");
+      // A name missing from the restored values was removed in the shell.
       this.restore = () => {
         const name = this.getAttribute("name");
-        if (Object.hasOwn(window.mockup.state, name)) this.apply(window.mockup.state[name]);
+        this.apply(Object.hasOwn(window.mockup.state, name) ? window.mockup.state[name] : {});
       };
       this.clear = () => this.apply({});
       root.querySelector("slot").addEventListener("slotchange", () => this.render());

@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -24,7 +24,10 @@ before(async () => {
 
 after(async () => {
   await browser?.close();
-  for (const dir of started) await mockup("stop", "--dir", dir).catch(() => {});
+  for (const dir of started) {
+    await mockup("stop", "--dir", dir).catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 async function startOnce() {
@@ -96,6 +99,8 @@ test("T6: an answer in the browser reaches `mockup wait`, and the reply reaches 
   assert.equal(await mockup("stop", "--dir", dir), `stopped ${dir}\n`);
   assert.equal(alive(pid), false, "the server exited");
   assert.ok(existsSync(join(dir, "pages", "ask.html")), "the one-off folder stays until Phase 2 cleans it up");
+  started.delete(dir);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 // The page runs its own script in the frame and tries the browser API.
@@ -133,4 +138,36 @@ test("T10: a page's own script cannot read the API or post messages", { timeout:
   }
   assert.deepEqual(readFileSync(join(dir, "log.jsonl")), log, "the log is unchanged");
   assert.match(await mockup("status", "--dir", dir), /pending: 0\n/);
+});
+
+test("a draft removed under Unsent is cleared in the page and not sent", { timeout: 60_000 }, async () => {
+  const { dir, url } = await startOnce();
+  writeFileSync(join(dir, "pages", "ask.html"), ASK);
+  await mockup("show", "pages/ask.html", "--dir", dir);
+
+  const page = await browser.newPage();
+  await page.goto(url);
+  await page.waitForFunction(() => document.body.dataset.connected === "1");
+  const frame = page.frameLocator("iframe");
+  await frame.locator('mockup-option[value="Tabs"]').click();
+  await frame.locator("mockup-choice input").fill("maybe a drawer on phone");
+  await page.getByText("Unsent (1)").waitFor();
+
+  await page.locator(".drafts .draft").getByRole("button", { name: "Remove" }).click();
+  await frame.locator('mockup-option[value="Tabs"][aria-checked="false"]').waitFor();
+  assert.equal(await frame.locator('mockup-option[aria-checked="true"]').count(), 0);
+  assert.equal(await frame.locator("mockup-choice input").inputValue(), "");
+  assert.equal(await page.locator("#drafts").isHidden(), true);
+
+  await page.locator("#text").fill("Just text.");
+  await page.getByRole("button", { name: "Send to agent" }).click();
+  await page.locator("#chat .msg.user").waitFor();
+  await page.close();
+  assert.equal(await mockup("wait", "--dir", dir), [
+    "[mockup] 1 message from the browser:",
+    "--- #1 chat on pages/ask.html",
+    "Just text.",
+    "--- reply with `mockup say`, then run `mockup wait` again.",
+    "",
+  ].join("\n"));
 });
