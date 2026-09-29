@@ -170,12 +170,11 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
     return null;
   }
 
-  async function handle(req, res) {
-    const url = new URL(req.url, "http://127.0.0.1");
+  async function handle(req, res, url, headers) {
+    if (!url) return send(res, 400, { error: "bad request target" }, headers);
     const { pathname } = url;
     const prefix = Object.keys(PREFIXES).find((p) => pathname.startsWith(p));
     const group = ROUTES[pathname] ?? PREFIXES[prefix] ?? "host";
-    const headers = routeHeaders(pathname);
     const refusal = refused(req, group);
     if (refusal) return send(res, refusal[0], { error: refusal[1] }, headers);
 
@@ -281,9 +280,18 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
     }
   }
 
+  // The path is parsed once, and its headers chosen once, for every response
+  // to the request, errors included; an unparsable target gets the strictest.
   const server = createHttpServer((req, res) => {
-    handle(req, res).catch((err) => {
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message }, routeHeaders(req.url.split("?")[0]));
+    let url = null;
+    try {
+      url = new URL(req.url, "http://127.0.0.1");
+    } catch {
+      // Answered by handle.
+    }
+    const headers = url ? routeHeaders(url.pathname) : pageHeaders(port);
+    handle(req, res, url, headers).catch((err) => {
+      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message }, headers);
       else res.end();
     });
   });

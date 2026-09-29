@@ -1,8 +1,9 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -177,6 +178,32 @@ test("every /d/ refusal carries the sandbox policy, nosniff and the open CORS he
     assert.equal(res.headers["content-security-policy"], pageCsp(), `${method} ${path}`);
     assert.equal(res.headers["x-content-type-options"], "nosniff", `${method} ${path}`);
     assert.equal(res.headers["access-control-allow-origin"], "*", `${method} ${path}`);
+  }
+});
+
+// A request target exactly as written, which http.request would normalize.
+function rawGet(target) {
+  return new Promise((ok, fail) => {
+    const socket = connect(port, "127.0.0.1", () => socket.end(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`));
+    let data = "";
+    socket.on("data", (c) => (data += c));
+    socket.on("end", () => {
+      const [head] = data.split("\r\n\r\n");
+      const [status, ...lines] = head.split("\r\n");
+      ok({ status: Number(status.split(" ")[1]), headers: Object.fromEntries(lines.map((l) => [l.slice(0, l.indexOf(":")).toLowerCase(), l.slice(l.indexOf(":") + 1).trim()])) });
+    });
+    socket.on("error", fail);
+  });
+}
+
+test("a /d/ server error keeps the page headers, however the path is written", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  chmodSync(join(dir, page("pages/denied.html", "<p>x</p>")), 0);
+  for (const target of ["/d/pages/denied.html", `http://127.0.0.1:${port}/d/pages/denied.html`, "/d\\pages\\denied.html"]) {
+    const res = await rawGet(target);
+    assert.equal(res.status, 500, target);
+    assert.equal(res.headers["content-security-policy"], pageCsp(), target);
+    assert.equal(res.headers["x-content-type-options"], "nosniff", target);
+    assert.equal(res.headers["access-control-allow-origin"], "*", target);
   }
 });
 
