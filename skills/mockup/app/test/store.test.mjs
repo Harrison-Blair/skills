@@ -28,6 +28,35 @@ test("done and failed messages are no longer pending", () => {
   assert.deepEqual(s.pending(), []);
 });
 
+test("user messages keep their page and drafts; agent messages have no status", () => {
+  const file = tmpLog();
+  const s = new Store(file);
+  const drafts = [{ id: "choice:nav", kind: "choice", name: "nav", value: ["Tabs"] }];
+  const m = s.add({ from: "user", kind: "feedback", text: "", page: "pages/ask.html", drafts });
+  assert.equal(m.status, "queued");
+  assert.equal(m.page, "pages/ask.html");
+  assert.deepEqual(new Store(file).messages.get(m.id).drafts, drafts);
+  assert.equal("status" in s.add({ from: "agent", text: "ok" }), false);
+});
+
+test("what the shell shows survives a restart", () => {
+  const file = tmpLog();
+  const showing = { pages: ["pages/ask.html"], title: null, device: "fit" };
+  assert.equal(new Store(file).showing, null);
+  new Store(file).show(showing);
+  assert.deepEqual(new Store(file).showing, showing);
+});
+
+test("unknown event types are skipped on replay", () => {
+  const file = tmpLog();
+  new Store(file).add({ from: "user", text: "kept" });
+  appendFileSync(file, JSON.stringify({ type: "approval", page: "pages/a.html" }) + "\n");
+  appendFileSync(file, JSON.stringify({ type: "round", round: { id: "context-1" } }) + "\n");
+  const s = new Store(file);
+  assert.deepEqual(s.list().map((m) => m.text), ["kept"]);
+  assert.equal(s.add({ from: "user", text: "after" }).seq, 2);
+});
+
 test("a torn final line from a crash is cut off, so later writes survive", () => {
   const file = tmpLog();
   new Store(file).add({ from: "user", text: "kept" });
