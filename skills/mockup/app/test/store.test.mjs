@@ -1,11 +1,18 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../server/store.mjs";
 
-const tmpLog = () => join(mkdtempSync(join(tmpdir(), "mockup-store-")), "log.jsonl");
+const temps = [];
+const tmpLog = () => {
+  temps.push(mkdtempSync(join(tmpdir(), "mockup-store-")));
+  return join(temps.at(-1), "log.jsonl");
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 test("messages and statuses survive a restart", () => {
   const file = tmpLog();

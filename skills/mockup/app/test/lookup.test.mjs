@@ -4,7 +4,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ after(() => {
   // The server survived everything below.
   process.kill(pid, 0);
   mockup("stop", "--dir", dir);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 function call(method, path, body) {

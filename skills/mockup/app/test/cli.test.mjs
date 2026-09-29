@@ -2,7 +2,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -13,6 +13,11 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "mockup.m
 const ENV = { ...process.env };
 for (const k of ["CODEX_THREAD_ID", "PI_SESSION_ID", "MOCKUP_DIR", "CODEX_SANDBOX_NETWORK_DISABLED"]) delete ENV[k];
 const started = new Set();
+const temps = [];
+const temp = (prefix) => {
+  temps.push(mkdtempSync(join(tmpdir(), prefix)));
+  return temps.at(-1);
+};
 
 const mockup = (args, { cwd = tmpdir(), env = ENV } = {}) => {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
@@ -58,6 +63,7 @@ function page(dir, rel, html = "<h1>Ask</h1>") {
 
 after(() => {
   for (const dir of started) mockup(["stop", "--dir", dir]);
+  for (const dir of [...started, ...temps]) rmSync(dir, { recursive: true, force: true });
 });
 
 test("an unknown flag is an error that names it", () => {
@@ -75,7 +81,7 @@ test("no command and an unknown command print usage", () => {
 });
 
 test("status with no server exits 2", () => {
-  const r = mockup(["status", "--dir", mkdtempSync(join(tmpdir(), "mockup-cli-empty-"))]);
+  const r = mockup(["status", "--dir", temp("mockup-cli-empty-")]);
   assert.equal(r.code, 2);
   assert.match(r.err, /no server is running/);
 });
@@ -95,7 +101,7 @@ test("start --once makes a temp session folder and prints the three lines", () =
 });
 
 test("start --design makes .design/NAME, and a second start reuses the running server", () => {
-  const repo = mkdtempSync(join(tmpdir(), "mockup-cli-repo-"));
+  const repo = temp("mockup-cli-repo-");
   const first = start(["--design", "shop", "--repo", repo]);
   assert.equal(first.dir, join(repo, ".design", "shop"));
   assert.ok(existsSync(join(repo, ".design", ".gitignore")));
@@ -110,7 +116,7 @@ test("start --design makes .design/NAME, and a second start reuses the running s
 });
 
 test("two starts at once share one server", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "mockup-cli-repo-"));
+  const repo = temp("mockup-cli-repo-");
   started.add(join(repo, ".design", "twice"));
   const run = () => new Promise((ok) => {
     const child = spawn(process.execPath, [CLI, "start", "--design", "twice", "--repo", repo, "--no-open"], { env: ENV });
@@ -203,7 +209,7 @@ test("shot and handoff are not available yet", () => {
 
 // A stand-in `codex` on PATH that records how it was called.
 function fakeCodex() {
-  const dir = mkdtempSync(join(tmpdir(), "mockup-fake-codex-"));
+  const dir = temp("mockup-fake-codex-");
   const log = join(dir, "calls.jsonl");
   writeFileSync(join(dir, "codex"), `#!${process.execPath}\nrequire("fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`, { mode: 0o755 });
   return { dir, calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []) };
@@ -211,7 +217,7 @@ function fakeCodex() {
 
 test("with Codex, the server queues each browser message into the agent's session", { skip: process.platform === "win32" }, async () => {
   const codex = fakeCodex();
-  const repo = mkdtempSync(join(tmpdir(), "mockup-cli-repo-"));
+  const repo = temp("mockup-cli-repo-");
   const env = { ...ENV, PATH: `${codex.dir}:${ENV.PATH}`, CODEX_THREAD_ID: "thread-123" };
   const { dir } = start(["--design", "cx", "--repo", repo], { env });
   const s = session(dir);
@@ -242,7 +248,7 @@ test("with Codex, the server queues each browser message into the agent's sessio
 });
 
 test("inside Codex's sandbox, a server the command cannot see gets the way out", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mockup-sandboxed-"));
+  const dir = temp("mockup-sandboxed-");
   mkdirSync(join(dir, ".runtime"));
   // From inside the sandbox's own process namespace, the server's pid is not visible.
   writeFileSync(join(dir, ".runtime", "session.json"), JSON.stringify({ pid: 999999999, port: 9 }));

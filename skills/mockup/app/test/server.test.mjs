@@ -1,7 +1,7 @@
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,10 +13,18 @@ import { createServer } from "../server/server.mjs";
 const MAIN = join(dirname(fileURLToPath(import.meta.url)), "..", "server", "main.mjs");
 const SESSION = { id: "session-id", kind: "once", name: null, harness: "claude" };
 let app, port, dir, fixtures;
+const temps = [];
+const temp = (prefix) => {
+  temps.push(mkdtempSync(join(tmpdir(), prefix)));
+  return temps.at(-1);
+};
+after(() => {
+  for (const d of temps) rmSync(d, { recursive: true, force: true });
+});
 
 beforeEach(async () => {
-  dir = mkdtempSync(join(tmpdir(), "mockup-server-"));
-  fixtures = mkdtempSync(join(tmpdir(), "mockup-fixtures-"));
+  dir = temp("mockup-server-");
+  fixtures = temp("mockup-fixtures-");
   mkdirSync(join(fixtures, "shell"));
   mkdirSync(join(fixtures, "kit"));
   writeFileSync(join(fixtures, "shell", "index.html"), "<html>shell</html>");
@@ -428,7 +436,7 @@ async function sessionFile(sessionDir) {
 }
 
 test("the server process writes session.json once, keeps a live server, and replaces a stale one", async () => {
-  const sessionDir = mkdtempSync(join(tmpdir(), "mockup-main-"));
+  const sessionDir = temp("mockup-main-");
   mkdirSync(join(sessionDir, ".runtime"));
   // A stale file from a crashed server whose port no longer answers.
   writeFileSync(join(sessionDir, ".runtime", "session.json"), JSON.stringify({ id: "dead", pid: 999999, port: 1, url: "http://127.0.0.1:1/" }));
