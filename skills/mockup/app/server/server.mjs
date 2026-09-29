@@ -8,7 +8,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { TYPES, servePage, sessionFile } from "./pages.mjs";
+import { TYPES, pageHeaders, servePage, sessionFile } from "./pages.mjs";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_BODY = 1024 * 1024;
@@ -18,7 +18,12 @@ const MAX_MESSAGE = 256 * 1024;
 export const STALL_MS = 2 * 60 * 1000;
 const DEVICES = ["fit", "phone", "tablet", "desktop"];
 const KIT = ["core.js", "kit.js", "annotate.js"];
-const SHELL_CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src 'self'; frame-ancestors 'none'";
+const SHELL_HEADERS = {
+  "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src 'self'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "cache-control": "no-store",
+};
 
 // Exact routes and prefixes, with their check group.
 const ROUTES = {
@@ -56,6 +61,13 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
     if (group === "agent" && (h.origin !== undefined || Object.keys(h).some((k) => k.startsWith("sec-fetch-")))) return [403, "agent routes are for the CLI only"];
     if (group === "page" && req.method !== "GET") return [405, "method not allowed"];
     return null;
+  }
+
+  // Headers every response on a path carries, refusals and errors included.
+  function routeHeaders(pathname) {
+    if (pathname.startsWith("/d/")) return pageHeaders(port);
+    if (pathname === "/" || pathname.startsWith("/shell/")) return SHELL_HEADERS;
+    return {};
   }
 
   function agentState() {
@@ -140,14 +152,8 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
     } catch {
       file = null;
     }
-    if (!file) return send(res, 404, { error: "not found" });
-    res.writeHead(200, {
-      "content-type": TYPES[extname(file).toLowerCase()] ?? "application/octet-stream",
-      "content-security-policy": SHELL_CSP,
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "cache-control": "no-store",
-    });
+    if (!file) return send(res, 404, { error: "not found" }, SHELL_HEADERS);
+    res.writeHead(200, { ...SHELL_HEADERS, "content-type": TYPES[extname(file).toLowerCase()] ?? "application/octet-stream" });
     res.end(readFileSync(file));
   }
 
@@ -169,18 +175,19 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
     const { pathname } = url;
     const prefix = Object.keys(PREFIXES).find((p) => pathname.startsWith(p));
     const group = ROUTES[pathname] ?? PREFIXES[prefix] ?? "host";
+    const headers = routeHeaders(pathname);
     const refusal = refused(req, group);
-    if (refusal) return send(res, refusal[0], { error: refusal[1] });
+    if (refusal) return send(res, refusal[0], { error: refusal[1] }, headers);
 
     if (prefix) {
       let rel;
       try {
         rel = decodeURIComponent(pathname.slice(prefix.length));
       } catch {
-        return send(res, 404, { error: "not found" });
+        return send(res, 404, { error: "not found" }, headers);
       }
       if (prefix === "/d/") return servePage(res, dir, rel, port);
-      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
+      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" }, headers);
       return serveShell(res, rel);
     }
 
@@ -270,13 +277,13 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
       }
 
       default:
-        return send(res, ROUTES[pathname] ? 405 : 404, { error: ROUTES[pathname] ? "method not allowed" : "not found" });
+        return send(res, ROUTES[pathname] ? 405 : 404, { error: ROUTES[pathname] ? "method not allowed" : "not found" }, headers);
     }
   }
 
   const server = createHttpServer((req, res) => {
     handle(req, res).catch((err) => {
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message });
+      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message }, routeHeaders(req.url.split("?")[0]));
       else res.end();
     });
   });

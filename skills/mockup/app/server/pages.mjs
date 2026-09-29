@@ -50,15 +50,17 @@ export function sessionFile(dir, rel) {
 // never from the internet. Pages use 127.0.0.1, which localhost does not match.
 export const pageCsp = (port) => `sandbox allow-scripts allow-forms; script-src http://127.0.0.1:${port} 'unsafe-inline'`;
 
-// Exactly one page script, just before the last </body>, or at the end.
-export function injectScript(html) {
-  const at = html.toLowerCase().lastIndexOf("</body>");
-  return at < 0 ? html + PAGE_SCRIPT : html.slice(0, at) + PAGE_SCRIPT + html.slice(at);
-}
+// Every /d/ response carries these, refusals and errors included.
+export const pageHeaders = (port) => ({ "access-control-allow-origin": "*", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": pageCsp(port) });
+
+// Exactly one page script, on its own line at the very end. Searching for
+// </body> would find it in comments and script strings too; browsers run a
+// script after </html> as part of the body anyway.
+export const injectScript = (html) => `${html}\n${PAGE_SCRIPT}\n`;
 
 export function servePage(res, dir, rel, port) {
   const file = sessionFile(dir, rel);
-  const headers = { "access-control-allow-origin": "*", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": pageCsp(port) };
+  const headers = pageHeaders(port);
   if (!file) {
     res.writeHead(404, { ...headers, "content-type": "application/json" });
     return res.end(JSON.stringify({ error: "not found" }));

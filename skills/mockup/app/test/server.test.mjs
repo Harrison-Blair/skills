@@ -119,14 +119,14 @@ test("T4: HTML gets the sandbox policy and one page script; other files are sent
   const res = await call("GET", "/d/pages/ask.html");
   assert.equal(res.headers["content-security-policy"], pageCsp());
   assert.equal(res.headers["content-type"], "text/html; charset=utf-8");
-  assert.equal(res.body, '<html><body><p>Ask</p><script src="/kit/page.js"></script></body></html>');
+  assert.equal(res.body, '<html><body><p>Ask</p></body></html>\n<script src="/kit/page.js"></script>\n', "appended at the very end");
 
+  // </body> in a comment or a script string must not attract the tag.
   page("pages/two.html", "<body>a</body><!-- </body> -->tail");
-  const two = (await call("GET", "/d/pages/two.html")).body;
-  assert.equal(two, '<body>a</body><!-- <script src="/kit/page.js"></script></body> -->tail', "before the last </body>");
+  assert.equal((await call("GET", "/d/pages/two.html")).body, '<body>a</body><!-- </body> -->tail\n<script src="/kit/page.js"></script>\n');
 
   page("pages/bare.html", "<p>no body tag</p>");
-  assert.equal((await call("GET", "/d/pages/bare.html")).body, '<p>no body tag</p><script src="/kit/page.js"></script>');
+  assert.equal((await call("GET", "/d/pages/bare.html")).body, '<p>no body tag</p>\n<script src="/kit/page.js"></script>\n');
 
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255, 0x3c, 0x2f, 0x62, 0x6f, 0x64, 0x79, 0x3e]);
   page("assets/dot.png", bytes);
@@ -165,6 +165,54 @@ test("T5: /d/ serves only pages, assets, approved and tokens.css, never through 
   }
 });
 
+test("every /d/ refusal carries the sandbox policy, nosniff and the open CORS header", async () => {
+  const refusals = [
+    ["GET", "/d/%E0%A4%A", {}, 404],
+    ["POST", "/d/pages/ask.html", {}, 405],
+    ["GET", "/d/pages/ask.html", { host: `evil.example:${port}` }, 421],
+  ];
+  for (const [method, path, headers, status] of refusals) {
+    const res = await call(method, path, { headers });
+    assert.equal(res.status, status, `${method} ${path}`);
+    assert.equal(res.headers["content-security-policy"], pageCsp(), `${method} ${path}`);
+    assert.equal(res.headers["x-content-type-options"], "nosniff", `${method} ${path}`);
+    assert.equal(res.headers["access-control-allow-origin"], "*", `${method} ${path}`);
+  }
+});
+
+// Real Chromium, so the check is what a browser parses, not what the text looks like.
+test("the page script runs exactly once in Chromium, wherever the page says </body>", async () => {
+  const { chromium } = await import("/home/penguin/source/skills/skills/mockup/app/node_modules/playwright/index.mjs");
+  writeFileSync(join(fixtures, "kit", "core.js"), "window.kitRuns = (window.kitRuns || 0) + 1;");
+  const cases = {
+    "normal.html": "<!doctype html><html><head><title>n</title></head><body><p>x</p><script>window.parsed = 1;</script></body>",
+    "fragment.html": "<p>no body tag</p><script>window.parsed = 1;</script>",
+    "comment.html": "<body><script>window.parsed = 1;</script>a</body><!-- </body> -->tail",
+    "string-open.html": '<body><script>window.example="</body>"; window.parsed=1;</script>ok',
+    "string-after.html": "<body><p>x</p></body><script>window.s = '</body>'; window.parsed = 1;</script>",
+    "html-end.html": "<html><body><p>x</p><script>window.parsed = 1;</script></body></html>",
+  };
+  for (const [name, html] of Object.entries(cases)) page(`pages/${name}`, html);
+  const browser = await chromium.launch();
+  try {
+    for (const name of Object.keys(cases)) {
+      const tab = await browser.newPage();
+      const errors = [];
+      tab.on("pageerror", (err) => errors.push(err.message));
+      await tab.goto(`http://127.0.0.1:${port}/d/pages/${name}`, { waitUntil: "load" });
+      const seen = await tab.evaluate(() => ({
+        tags: document.querySelectorAll('script[src="/kit/page.js"]').length,
+        kitRuns: window.kitRuns ?? 0,
+        parsed: window.parsed ?? 0,
+      }));
+      assert.deepEqual({ ...seen, errors }, { tags: 1, kitRuns: 1, parsed: 1, errors: [] }, name);
+      await tab.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 // --- shell and kit ---
 
 test("the shell and its files are served with the shell policy, and only from the shell folder", async () => {
@@ -176,11 +224,20 @@ test("the shell and its files are served with the shell policy, and only from th
   assert.equal(js.body, "shell();");
   assert.equal(js.headers["content-type"], "text/javascript; charset=utf-8");
   assert.equal(js.headers["content-security-policy"], csp);
-  for (const path of ["/shell/..%2fsecret.txt", "/shell/missing.js", "/secret.txt"]) {
+  const paths = ["/shell/..%2fsecret.txt", "/shell/missing.js"];
+  if (process.platform !== "win32") {
+    symlinkSync(join(fixtures, "secret.txt"), join(fixtures, "shell", "out.txt"));
+    paths.push("/shell/out.txt");
+  }
+  for (const path of paths) {
     const res = await call("GET", path);
     assert.equal(res.status, 404, path);
     assert.doesNotMatch(String(res.body), /SECRET/);
+    assert.equal(res.headers["content-security-policy"], csp, `${path} is refused with the shell policy`);
   }
+  const outside = await call("GET", "/secret.txt");
+  assert.equal(outside.status, 404);
+  assert.doesNotMatch(String(outside.body), /SECRET/);
 });
 
 test("the page script joins core, kit and annotate in order, read on every request", async () => {
