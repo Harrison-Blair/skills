@@ -12,7 +12,9 @@
       "project",
       "git_branch",
       "five_hour_remaining",
-      "weekly_remaining",
+      "weekly_remaining"
+    ],
+    [
       "session_name",
       "prompt_cache"
     ]

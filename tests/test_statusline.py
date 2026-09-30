@@ -195,7 +195,8 @@ class RendererTests(unittest.TestCase):
             self.assertEqual(
                 statusline.render_claude(payload, self.config, now=self.NOW),
                 "tok 20k in / 1k out | $1.23 | +156 -23\n"
-                "myproj | feature-x | status work | cache: warm until 3:05pm",
+                "myproj | feature-x\n"
+                "status work | cache: warm until 3:05pm",
             )
 
     def test_cold_cache_and_both_lines(self) -> None:
