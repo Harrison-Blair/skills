@@ -201,7 +201,7 @@ export function createServer({ dir, session, stallMs = STALL_MS, deliver = null,
         return servePageScript(res);
 
       case "GET /api/ping":
-        return send(res, 200, { id: session.id });
+        return send(res, 200, { id: session.id, pid: process.pid });
 
       case "GET /api/state":
         return send(res, 200, { session, showing: store.showing, messages: store.list(), agent: agentState() });

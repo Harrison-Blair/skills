@@ -423,14 +423,21 @@ test("a start that fails after starting its server leaves no server running", { 
 
 // A stand-in server in its own process: answers /api/ping with the ids given
 // in turn (the last one from then on) and handles the stop request as told.
-async function standIn(stopMode, ids) {
+// `pid` is the expression whose value its ping reports as the pid.
+async function standIn(stopMode, ids, pid = "process.pid") {
   const script = `
     const ids = ${JSON.stringify(ids)};
     let pings = 0;
     const server = require("http").createServer((req, res) => {
-      if (req.url === "/api/ping") return res.end(JSON.stringify({ id: ids[Math.min(pings++, ids.length - 1)] }));
+      if (req.url === "/api/ping") return res.end(JSON.stringify({ id: ids[Math.min(pings++, ids.length - 1)], pid: ${pid} }));
       if (req.url === "/api/agent/stop") {
         if (${JSON.stringify(stopMode)} === "hang") return;
+        if (${JSON.stringify(stopMode)} === "exit") return res.end("{}", () => process.exit(0));
+        if (${JSON.stringify(stopMode)} === "linger") {
+          server.close();
+          setTimeout(() => process.exit(0), 1500);
+          return res.end("{}", () => server.closeAllConnections());
+        }
         res.statusCode = ${JSON.stringify(stopMode)} === "500" ? 500 : 200;
         return res.end("{}");
       }
@@ -478,6 +485,88 @@ for (const mode of ["hang", "500", "200"]) {
     assert.equal(alive(server.child.pid), true, "nothing was signalled");
   });
 }
+
+const UNIX = { timeout: 30_000, skip: process.platform === "win32" };
+const state = (server) => Promise.race([server.exited.then(() => "gone"), new Promise((ok) => setTimeout(() => ok("alive"), 2000))]);
+
+// Runs stop against a stand-in whose session.json records `pid`, and checks
+// the time limit and that no failure shows a stack trace.
+async function stopStandIn(server, pid) {
+  const dir = temp("mockup-standin-");
+  staleSession(dir, { id: "the-id", pid, port: server.port });
+  const began = Date.now();
+  const r = await runAsync(["stop", "--dir", dir]);
+  assert.ok(Date.now() - began < 12_000, `took ${Date.now() - began} ms`);
+  assert.doesNotMatch(r.err, STACK);
+  return { ...r, dir, file: join(dir, ".runtime", "session.json") };
+}
+
+test("stop with no recorded pid reports a server that exits on the stop request as stopped", UNIX, async () => {
+  const server = await standIn("exit", ["the-id"]);
+  const r = await stopStandIn(server, undefined);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, `stopped ${r.dir}\n`);
+  assert.equal(await state(server), "gone");
+  assert.equal(existsSync(r.file), false, "the session.json nothing answers for is removed");
+});
+
+test("stop returns only once a server that stopped answering has exited", UNIX, async () => {
+  const server = await standIn("linger", ["the-id"]);
+  const r = await stopStandIn(server, undefined);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, `stopped ${r.dir}\n`);
+  assert.equal(await Promise.race([server.exited.then(() => "gone"), new Promise((ok) => setTimeout(() => ok("alive"), 200))]), "gone");
+});
+
+// Recorded pids that cannot be signalled; the server's own ping supplies it.
+const BAD_PIDS = [["missing", undefined], ['"abc"', "abc"], ["0", 0], ["-1", -1], ["1.5", 1.5], ["null", null]];
+
+for (const [what, pid] of BAD_PIDS) {
+  test(`stop with a recorded pid that is ${what} ends a server that ignores the stop request, by the pid its ping reports`, UNIX, async () => {
+    const server = await standIn("200", ["the-id"]);
+    const r = await stopStandIn(server, pid);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, `stopped ${r.dir}\n`);
+    assert.equal(await state(server), "gone");
+  });
+
+  test(`stop with a recorded pid and a ping pid that are ${what} signals nothing and says the server did not stop`, UNIX, async () => {
+    const server = await standIn("200", ["the-id"], JSON.stringify(pid) ?? "undefined");
+    const r = await stopStandIn(server, pid);
+    assert.equal(r.code, 1);
+    assert.equal(r.err, `mockup: the server at http://127.0.0.1:${server.port}/ did not stop\n`);
+    assert.equal(r.out, "");
+    assert.equal(await state(server), "alive");
+  });
+}
+
+test("stop never signals the recorded pid when the ping reports none", UNIX, async () => {
+  const server = await standIn("200", ["the-id"], "undefined");
+  const r = await stopStandIn(server, server.child.pid);
+  assert.equal(r.code, 1);
+  assert.equal(r.err, `mockup: the server at http://127.0.0.1:${server.port}/ did not stop\n`);
+  assert.equal(await state(server), "alive");
+});
+
+test("stop with a recorded pid of an unrelated process signals the server the ping names, not that process", UNIX, async () => {
+  const other = await stranger();
+  const server = await standIn("hang", ["the-id"]);
+  const r = await stopStandIn(server, other.pid);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, `stopped ${r.dir}\n`);
+  assert.equal(await state(server), "gone");
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal(alive(other.pid), true, "the unrelated process is still alive");
+});
+
+test("stop leaves alone a server that answers later pings with another id", UNIX, async () => {
+  const server = await standIn("200", ["the-id", "another-id"]);
+  const r = await stopStandIn(server, server.child.pid);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, `stopped ${r.dir} (no server was running)\n`);
+  assert.equal(await state(server), "alive");
+  assert.equal(existsSync(r.file), false, "our stale session.json is removed");
+});
 
 test("inside Codex's sandbox, a server the command cannot see gets the way out", () => {
   const dir = temp("mockup-sandboxed-");

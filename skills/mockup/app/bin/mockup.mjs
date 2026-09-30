@@ -56,27 +56,30 @@ function session(designDir) {
   return usable ? s : null;
 }
 
-// True when the server at s.port answers /api/ping with s.id. A pid proves
-// nothing: after a crash it may belong to any process.
-function answers(s) {
+// What the server at s.port answers to /api/ping, or null when nothing
+// readable comes back.
+function ping(s) {
   return new Promise((ok) => {
-    if (!s) return ok(false);
     const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", timeout: 2000 }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
       res.on("end", () => {
         try {
-          ok(JSON.parse(body).id === s.id);
+          ok(JSON.parse(body));
         } catch {
-          ok(false);
+          ok(null);
         }
       });
     });
     req.on("timeout", () => req.destroy());
-    req.on("error", () => ok(false));
+    req.on("error", () => ok(null));
     req.end();
   });
 }
+
+// True when the server at s.port answers /api/ping with s.id. A pid proves
+// nothing: after a crash it may belong to any process.
+const answers = async (s) => !!s && (await ping(s))?.id === s.id;
 
 // The recorded session when its server confirms it, else null.
 async function confirmed(designDir) {
@@ -308,22 +311,32 @@ async function stop(flags) {
   const designDir = findDesignDir(flags);
   const file = join(designDir, ".runtime", "session.json");
   const recorded = session(designDir);
-  const s = await confirmed(designDir);
+  let reply = recorded && (await ping(recorded));
+  const s = recorded && reply?.id === recorded.id ? recorded : null;
+  let stopped = false;
   if (s) {
     const sent = Date.now();
     await requestStop(s);
-    // The pid is the confirmed server's own, so waiting on it is safe.
-    while (alive(s.pid) && Date.now() < sent + 5000) await sleep(50);
-    if (alive(s.pid) && (await answers(s))) {
-      process.kill(s.pid, "SIGTERM");
-      for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await sleep(50);
-      // On Windows the signal ends the server at once, before it can clean up;
-      // release what it still holds.
-      if (!alive(s.pid)) {
-        if (session(designDir)?.id === s.id) rmSync(file, { force: true });
-      }
+    // The proof that it stopped is that it no longer answers with its id.
+    let pid;
+    do {
+      pid = reply.pid;
+      reply = await ping(s);
+    } while (reply?.id === s.id && Date.now() < sent + 5000 && !(await sleep(50)));
+    // Its last reported pid is only watched, so that it has exited on return.
+    while (reply === null && alive(pid) && Date.now() < sent + 5000) await sleep(50);
+    // The pid is the one the server itself just reported; the recorded one
+    // may be missing, or belong to anything.
+    if (reply?.id === s.id && alive(reply.pid)) {
+      process.kill(reply.pid, "SIGTERM");
+      for (const deadline = Date.now() + 10000; alive(reply.pid) && Date.now() < deadline; ) await sleep(50);
+      reply = await ping(s);
     }
-    if (alive(s.pid)) fail(`the server at ${urlOf(s)} did not stop`);
+    if (reply?.id === s.id) fail(`the server at ${urlOf(s)} did not stop`);
+    // A reply with another id comes from a server that is not ours.
+    stopped = reply === null;
+    // A server ended by signal, or not ours, leaves the file behind.
+    if (session(designDir)?.id === s.id) rmSync(file, { force: true });
   } else {
     // Nothing answers for this session: the file is stale, and its pid may
     // belong to anything, so nothing is signalled.
@@ -338,7 +351,7 @@ async function stop(flags) {
       // No link.
     }
   }
-  if (!flags.quiet) console.log(`stopped ${designDir}${s ? "" : " (no server was running)"}`);
+  if (!flags.quiet) console.log(`stopped ${designDir}${stopped ? "" : " (no server was running)"}`);
 }
 
 // Inside Codex's sandbox the server can neither listen nor be reached, and

@@ -83,7 +83,7 @@ test("T1: a foreign Host header is refused in every check group", async () => {
   for (const [method, path] of [["GET", "/api/ping"], ["GET", "/api/state"], ["GET", "/"], ["GET", "/d/pages/ask.html"], ["GET", "/kit/page.js"], ["GET", "/api/agent/wait"], ["POST", "/api/agent/say"]]) {
     assert.equal((await call(method, path, { headers: evil })).status, 421, `${method} ${path}`);
   }
-  assert.deepEqual((await call("GET", "/api/ping")).body, { id: SESSION.id });
+  assert.deepEqual((await call("GET", "/api/ping")).body, { id: SESSION.id, pid: process.pid });
   assert.equal((await call("GET", "/api/ping", { headers: { host: `localhost:${port}` } })).status, 200);
 });
 
