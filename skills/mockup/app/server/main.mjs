@@ -73,21 +73,27 @@ const read = () => {
 function answers(s) {
   return new Promise((ok) => {
     if (!s) return ok(false);
-    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", headers: { host: `127.0.0.1:${s.port}` }, timeout: 2000 }, (res) => {
+    // A total deadline, not an idle timeout: a reply that trickles a byte at
+    // a time would reset an idle timeout forever.
+    const timer = setTimeout(() => req.destroy(), 2000);
+    const settle = (answer) => {
+      clearTimeout(timer);
+      ok(answer);
+    };
+    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", headers: { host: `127.0.0.1:${s.port}` } }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
       res.on("end", () => {
         try {
-          ok(JSON.parse(body).id === s.id);
+          settle(JSON.parse(body).id === s.id);
         } catch {
-          ok(false);
+          settle(false);
         }
       });
       // A reply cut off before its end is no answer.
-      for (const cut of ["aborted", "error", "close"]) res.on(cut, () => ok(false));
+      for (const cut of ["aborted", "error", "close"]) res.on(cut, () => settle(false));
     });
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => ok(false));
+    req.on("error", () => settle(false));
     req.end();
   });
 }

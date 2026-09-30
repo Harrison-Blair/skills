@@ -747,13 +747,19 @@ describe("stop never signals or probes a pid it must not", { concurrency: 12, ti
 // and gives every other request the headers and part of a JSON body. `then`
 // says what follows: "killed" leaves that to the test, which kills it 200 ms
 // after the first partial reply; "destroyed" destroys the socket; "silent"
-// sends nothing at all, not even the headers.
+// sends nothing at all, not even the headers; "trickle" sends a space every
+// 250 ms and never ends.
 async function cutOff(then, pings = true) {
   const script = `
     const server = require("http").createServer((req, res) => {
       if (req.url === "/api/ping" && ${pings}) return res.end(JSON.stringify({ id: "the-id", pid: process.pid }));
       if (${JSON.stringify(then)} === "silent") return;
       res.writeHead(200, { "content-type": "application/json" });
+      if (${JSON.stringify(then)} === "trickle") {
+        res.write("{");
+        const drip = setInterval(() => res.write(" "), 250);
+        return req.on("close", () => clearInterval(drip));
+      }
       res.write('{"messages":[{"text":"par', () => {
         if (${JSON.stringify(then)} === "destroyed") setTimeout(() => res.socket.destroy(), 50);
         else console.log("partial");
@@ -815,6 +821,32 @@ for (const then of ["killed", "destroyed"]) {
     assert.notEqual(s.id, "the-id");
     assert.equal(r.out.match(/^open: (\S+)$/m)[1], `http://127.0.0.1:${s.port}/`);
     assert.equal(mockup(["status", "--dir", dir]).code, 0);
+  });
+}
+
+test("start over a server whose ping reply trickles and never ends starts a real server", UNIX, async () => {
+  const server = await cutOff("trickle", false);
+  const repo = temp("mockup-cut-");
+  const dir = join(repo, ".design", "d");
+  staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+  const began = Date.now();
+  const r = await runAsync(["start", "--design", "d", "--repo", repo, "--no-open"]);
+  started.add(dir);
+  const took = Date.now() - began;
+  assert.equal(r.err, "");
+  assert.equal(r.code, 0);
+  assert.notEqual(session(dir).id, "the-id");
+  assert.ok(took < 8000, `took ${took} ms`);
+});
+
+for (const value of ["-1", "0", "1.5", "abc", "", "1e12"]) {
+  test(`MOCKUP_TIMEOUT_MS=${JSON.stringify(value)} is ignored without a warning`, UNIX, async () => {
+    const server = await cutOff("destroyed");
+    const dir = temp("mockup-cut-");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const r = await runAsync(["status", "--dir", dir], { env: { ...ENV, MOCKUP_TIMEOUT_MS: value } });
+    assert.equal(r.err, lost(server.port));
+    assert.equal(r.code, 2);
   });
 }
 

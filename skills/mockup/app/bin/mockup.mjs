@@ -77,8 +77,15 @@ function session(designDir) {
 // abandons any response slower than five minutes, and `wait` must be able to
 // block for hours. Settles exactly once, on the first of: the reply complete
 // ({ status, text }); a request error, the reply cut off before its end, or
-// `limit` milliseconds passing ({ lost }). The limit is 0 for none.
-function send(s, method, path, body, limit = Number(process.env.MOCKUP_TIMEOUT_MS) || 30000) {
+// `limit` milliseconds passing ({ lost }). The limit is 0 for none. The
+// default is 30 s, or MOCKUP_TIMEOUT_MS (a test override) when that is a whole
+// number of milliseconds setTimeout accepts; anything else is ignored.
+function defaultLimit() {
+  const n = Number(process.env.MOCKUP_TIMEOUT_MS);
+  return Number.isInteger(n) && n > 0 && n <= 2147483647 ? n : 30000;
+}
+
+function send(s, method, path, body, limit = defaultLimit()) {
   return new Promise((ok) => {
     let timer;
     const settle = (result) => {
