@@ -344,6 +344,141 @@ test("stop asks the server to stop; it removes its session.json and exits", () =
   assert.match(readFileSync(join(dir, ".runtime", "server.log"), "utf8"), /stop requested/);
 });
 
+// Session files the CLI must treat as stale, whatever they hold.
+const BAD_FILES = [
+  ["empty", ""],
+  ["not JSON", "{nope"],
+  ["null", "null"],
+  ["an array", "[]"],
+  ["an empty object", "{}"],
+  ["id missing", { port: 1 }],
+  ["id a number", { id: 7 }],
+  ["id empty", { id: "" }],
+  ["port a string", { port: "80" }],
+  ["port 0", { port: 0 }],
+  ["port -1", { port: -1 }],
+  ["port 70000", { port: 70000 }],
+  ["port 1.5", { port: 1.5 }],
+  ["pid missing", { pid: undefined }],
+];
+const STACK = /at (file:|node:|\/|[A-Z]:\\)/;
+
+for (const [what, content] of BAD_FILES) {
+  test(`a session.json that is ${what} is stale to status, stop and start`, async () => {
+    const other = await stranger();
+    const repo = temp("mockup-bad-file-");
+    const dir = join(repo, ".design", "d");
+    const write = () => {
+      mkdirSync(join(dir, ".runtime"), { recursive: true });
+      const text = typeof content === "string" ? content : JSON.stringify({ id: "bad-id", pid: other.pid, port: other.port, ...content });
+      writeFileSync(join(dir, ".runtime", "session.json"), text);
+    };
+    write();
+    const status = mockup(["status", "--dir", dir]);
+    assert.equal(status.code, 2, status.err);
+    assert.equal(status.err, `mockup: no server is running in ${dir}; run \`mockup start\` again\n`);
+    const stop = mockup(["stop", "--dir", dir]);
+    assert.equal(stop.code, 0, stop.err);
+    assert.equal(stop.out, `stopped ${dir} (no server was running)\n`);
+    assert.equal(existsSync(join(dir, ".runtime", "session.json")), false);
+    write();
+    const r = mockup(["start", "--design", "d", "--repo", repo, "--no-open"]);
+    started.add(dir);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(session(dir).id !== "bad-id", true);
+    assert.equal(mockup(["status", "--dir", dir]).code, 0);
+    for (const err of [status.err, stop.err, r.err]) assert.doesNotMatch(err, STACK);
+    assert.equal(alive(other.pid), true);
+  });
+}
+
+// True when something answers on the URL a server logged.
+const answering = (url) => new Promise((ok) => {
+  const req = request(new URL("/api/ping", url), { timeout: 1000 }, (res) => ok(res.resume() && true));
+  req.on("timeout", () => req.destroy());
+  req.on("error", () => ok(false));
+  req.end();
+});
+
+test("a start that fails after starting its server leaves no server running", { skip: process.platform === "win32" }, async () => {
+  // The Pi link is written after the server is up; a file where its folder
+  // should be makes that fail.
+  const home = join(temp("mockup-home-"), "not-a-folder");
+  writeFileSync(home, "");
+  const repo = temp("mockup-fail-repo-");
+  const dir = join(repo, ".design", "d");
+  started.add(dir);
+  const r = mockup(["start", "--design", "d", "--repo", repo, "--no-open", "--harness", "pi", "--thread", "p-1"], { env: { ...ENV, MOCKUP_HOME: home } });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /^mockup: [^\n]+\n$/);
+  assert.doesNotMatch(r.err, STACK);
+  const url = readFileSync(join(dir, ".runtime", "server.log"), "utf8").match(/listening on (\S+)/)[1];
+  let up = true;
+  for (let i = 0; i < 50 && up; i++) {
+    up = await answering(url);
+    if (up) await new Promise((ok) => setTimeout(ok, 100));
+  }
+  assert.equal(up, false, "the server it started is gone");
+});
+
+// A stand-in server in its own process: answers /api/ping with the ids given
+// in turn (the last one from then on) and handles the stop request as told.
+async function standIn(stopMode, ids) {
+  const script = `
+    const ids = ${JSON.stringify(ids)};
+    let pings = 0;
+    const server = require("http").createServer((req, res) => {
+      if (req.url === "/api/ping") return res.end(JSON.stringify({ id: ids[Math.min(pings++, ids.length - 1)] }));
+      if (req.url === "/api/agent/stop") {
+        if (${JSON.stringify(stopMode)} === "hang") return;
+        res.statusCode = ${JSON.stringify(stopMode)} === "500" ? 500 : 200;
+        return res.end("{}");
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    server.listen(0, "127.0.0.1", () => console.log(server.address().port));`;
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+  strangers.push(child);
+  const port = await new Promise((ok) => child.stdout.once("data", (c) => ok(Number(String(c).trim()))));
+  const exited = new Promise((ok) => child.on("exit", ok));
+  return { child, port, exited };
+}
+
+const runAsync = (args) => new Promise((ok) => {
+  const child = spawn(process.execPath, [CLI, ...args], { env: ENV });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (err += c));
+  child.on("exit", (code) => ok({ code, out, err }));
+});
+
+for (const mode of ["hang", "500", "200"]) {
+  test(`stop ends a confirmed server whose stop request ${mode === "hang" ? "never answers" : `answers ${mode} without exiting`}`, { timeout: 30_000, skip: process.platform === "win32" }, async () => {
+    const server = await standIn(mode, ["the-id"]);
+    const dir = temp("mockup-standin-");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const began = Date.now();
+    const r = await runAsync(["stop", "--dir", dir]);
+    assert.ok(Date.now() - began < 12_000, `took ${Date.now() - began} ms`);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, `stopped ${dir}\n`);
+    assert.equal(await Promise.race([server.exited.then(() => "gone"), new Promise((ok) => setTimeout(() => ok("alive"), 2000))]), "gone");
+  });
+
+  test(`stop signals nothing when the server's id changes (stop request ${mode})`, { timeout: 30_000, skip: process.platform === "win32" }, async () => {
+    const server = await standIn(mode, ["the-id", "another-id"]);
+    const dir = temp("mockup-standin-");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const began = Date.now();
+    const r = await runAsync(["stop", "--dir", dir]);
+    assert.ok(Date.now() - began < 12_000, `took ${Date.now() - began} ms`);
+    assert.doesNotMatch(r.err, STACK);
+    assert.equal(alive(server.child.pid), true, "nothing was signalled");
+  });
+}
+
 test("inside Codex's sandbox, a server the command cannot see gets the way out", () => {
   const dir = temp("mockup-sandboxed-");
   mkdirSync(join(dir, ".runtime"));

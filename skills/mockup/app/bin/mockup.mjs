@@ -26,23 +26,41 @@ const DESIGN_GITIGNORE = `# mockup: runtime state and third-party images stay lo
 `;
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+// The server this `start` spawned: stopped if the command then fails. The
+// handle is this process's own child, so it cannot signal anything else.
+let spawned = null;
+
 function fail(message, code = 1) {
+  if (spawned && spawned.exitCode === null) spawned.kill("SIGTERM");
   console.error(`mockup: ${message}`);
   process.exit(code);
 }
 
+// No command ends with a stack trace: every failure is one "mockup: " line.
+process.on("uncaughtException", (err) => fail(err?.message ?? String(err)));
+process.on("unhandledRejection", (err) => fail(err?.message ?? String(err)));
+
 // --- locating a running session ---
 
+// The only reader of session.json. A file that is missing, unreadable, not
+// JSON or not a usable record reads as no session (stale), never an error.
 function session(designDir) {
-  const file = join(designDir, ".runtime", "session.json");
-  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  let s;
+  try {
+    s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const usable = s !== null && typeof s === "object" && !Array.isArray(s) && typeof s.id === "string" && s.id !== "" &&
+    Number.isInteger(s.port) && s.port >= 1 && s.port <= 65535;
+  return usable ? s : null;
 }
 
 // True when the server at s.port answers /api/ping with s.id. A pid proves
 // nothing: after a crash it may belong to any process.
 function answers(s) {
   return new Promise((ok) => {
-    if (typeof s?.id !== "string" || !Number.isInteger(s.port)) return ok(false);
+    if (!s) return ok(false);
     const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", timeout: 2000 }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
@@ -62,16 +80,13 @@ function answers(s) {
 
 // The recorded session when its server confirms it, else null.
 async function confirmed(designDir) {
-  let s;
-  try {
-    s = session(designDir);
-  } catch {
-    return null;
-  }
+  const s = session(designDir);
   return (await answers(s)) ? s : null;
 }
 
 function alive(pid) {
+  // 0 and negative numbers would address process groups.
+  if (!Number.isInteger(pid) || pid < 1) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -101,7 +116,7 @@ const urlOf = (s) => `http://127.0.0.1:${s.port}/`;
 
 async function api(designDir, method, path, body) {
   const s = await confirmed(designDir);
-  if (!s) fail(session(designDir) && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
+  if (!s) fail(existsSync(join(designDir, ".runtime", "session.json")) && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
   // node:http rather than fetch: fetch abandons any response slower than five
   // minutes, and `wait` must be able to block for hours.
   const { status, data } = await new Promise((ok) => {
@@ -176,6 +191,7 @@ async function start(flags) {
     windowsHide: true,
   });
   child.unref();
+  spawned = child;
   closeSync(log);
 
   // Two starts at once race for the session file; the loser exits, and this
@@ -269,36 +285,45 @@ async function status(flags) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Resolves once the stop request is answered, fails or has taken 5 seconds.
+function requestStop(s) {
+  return new Promise((ok) => {
+    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/agent/stop", method: "POST" }, (res) => {
+      res.resume();
+      res.on("end", ok);
+    });
+    setTimeout(() => {
+      req.destroy();
+      ok();
+    }, 5000).unref();
+    req.on("error", ok);
+    req.end();
+  });
+}
+
 // Asks the server to stop and returns once it has exited, so a start
 // right after cannot collide with it. Only a server that has just confirmed
 // its identity is ever signalled, and only when the request did not stop it.
 async function stop(flags) {
   const designDir = findDesignDir(flags);
   const file = join(designDir, ".runtime", "session.json");
-  let recorded = null;
-  try {
-    recorded = session(designDir);
-  } catch {
-    // Unreadable: stale.
-  }
+  const recorded = session(designDir);
   const s = await confirmed(designDir);
   if (s) {
-    await api(designDir, "POST", "/api/agent/stop");
+    const sent = Date.now();
+    await requestStop(s);
     // The pid is the confirmed server's own, so waiting on it is safe.
-    for (const deadline = Date.now() + 5000; alive(s.pid) && Date.now() < deadline; ) await sleep(50);
+    while (alive(s.pid) && Date.now() < sent + 5000) await sleep(50);
     if (alive(s.pid) && (await answers(s))) {
       process.kill(s.pid, "SIGTERM");
       for (const deadline = Date.now() + 10000; alive(s.pid) && Date.now() < deadline; ) await sleep(50);
       // On Windows the signal ends the server at once, before it can clean up;
       // release what it still holds.
       if (!alive(s.pid)) {
-        try {
-          if (JSON.parse(readFileSync(file, "utf8")).id === s.id) rmSync(file, { force: true });
-        } catch {
-          // Already gone.
-        }
+        if (session(designDir)?.id === s.id) rmSync(file, { force: true });
       }
     }
+    if (alive(s.pid)) fail(`the server at ${urlOf(s)} did not stop`);
   } else {
     // Nothing answers for this session: the file is stale, and its pid may
     // belong to anything, so nothing is signalled.

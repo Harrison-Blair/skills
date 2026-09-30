@@ -43,18 +43,24 @@ const session = {
   startedAt: new Date().toISOString(),
 };
 
+// The only reader of session.json here, with the CLI's rules: a file that is
+// not JSON or not a usable record reads as none (stale).
 const read = () => {
+  let s;
   try {
-    return JSON.parse(readFileSync(file, "utf8"));
+    s = JSON.parse(readFileSync(file, "utf8"));
   } catch {
     return null;
   }
+  const usable = s !== null && typeof s === "object" && !Array.isArray(s) && typeof s.id === "string" && s.id !== "" &&
+    Number.isInteger(s.port) && s.port >= 1 && s.port <= 65535;
+  return usable ? s : null;
 };
 
 // True when the server a session.json names answers with its id.
 function answers(s) {
   return new Promise((ok) => {
-    if (!s?.port) return ok(false);
+    if (!s) return ok(false);
     const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", headers: { host: `127.0.0.1:${s.port}` }, timeout: 2000 }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
