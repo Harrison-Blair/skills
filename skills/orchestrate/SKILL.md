@@ -27,7 +27,7 @@ Plan each wave of delegated work with the user before any worker starts:
 
 An implementer carries out the confirmed spec and runs its own relevant checks. A separate verifier, which does not implement, then checks the current result against the acceptance criteria. Only unmet criteria and clear correctness bugs fail the work; pass anything else to the user as notes. A verdict on an earlier version does not verify later edits.
 
-Send failures back to the implementer and return the revised result to the verifier. Continue while each round fixes something or learns something new. When the same failure recurs with nothing new learned, stop and bring it to the user as a possible spec problem.
+Use agents as tools: every pass gets a fresh agent, and an agent is stopped once its result is read. Send failures to a new implementer and the revised result to a new verifier, never to the agents from an earlier pass. Each brief carries what the new agent needs from earlier passes: the findings, the commit to start from, and the evidence already established. Continue while each round fixes something or learns something new. When the same failure recurs with nothing new learned, stop and bring it to the user as a possible spec problem.
 
 When a worker hits a design decision, it returns the decision with a recommendation and pauses only the dependent work. Bring the decision to the user through interrogate.
 
