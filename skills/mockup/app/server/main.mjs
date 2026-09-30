@@ -2,7 +2,7 @@
 // environment (MOCKUP_DIR, MOCKUP_KIND, MOCKUP_NAME, MOCKUP_HARNESS,
 // MOCKUP_THREAD). The CLI sends its output to .runtime/server.log.
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { createServer } from "./server.mjs";
@@ -43,12 +43,24 @@ const session = {
   startedAt: new Date().toISOString(),
 };
 
-// The only reader of session.json here, with the CLI's rules: a file that is
-// not JSON or not a usable record reads as none (stale).
+// The only reader of session.json here, with the CLI's rules: anything but a
+// regular file of at most 64 KB, or a file that is not JSON or not a usable
+// record, reads as none (stale), and is never waited on.
+const LIMIT = 65536;
 const read = () => {
   let s;
   try {
-    s = JSON.parse(readFileSync(file, "utf8"));
+    const entry = lstatSync(file);
+    if (!entry.isFile() || entry.size > LIMIT) return null;
+    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const bytes = Buffer.alloc(LIMIT + 1);
+      const n = readSync(fd, bytes, 0, bytes.length, 0);
+      if (n > LIMIT) return null;
+      s = JSON.parse(bytes.toString("utf8", 0, n));
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -71,6 +83,8 @@ function answers(s) {
           ok(false);
         }
       });
+      // A reply cut off before its end is no answer.
+      for (const cut of ["aborted", "error", "close"]) res.on(cut, () => ok(false));
     });
     req.on("timeout", () => req.destroy());
     req.on("error", () => ok(false));
@@ -102,7 +116,8 @@ for (let attempt = 0; ; attempt++) {
     console.error(`${file} exists and its server does not answer`);
     process.exit(1);
   }
-  rmSync(file, { force: true });
+  // Whatever is there, a folder included.
+  rmSync(file, { recursive: true, force: true });
 }
 rmSync(tmp, { force: true });
 console.log(`listening on ${session.url}`);

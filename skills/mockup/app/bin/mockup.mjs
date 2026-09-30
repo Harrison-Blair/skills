@@ -10,7 +10,7 @@
 //   mockup stop  [--dir DIR]
 import { spawn } from "node:child_process";
 import { request } from "node:http";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,12 +42,29 @@ process.on("unhandledRejection", (err) => fail(err?.message ?? String(err)));
 
 // --- locating a running session ---
 
-// The only reader of session.json. A file that is missing, unreadable, not
-// JSON or not a usable record reads as no session (stale), never an error.
+const sessionFile = (designDir) => join(designDir, ".runtime", "session.json");
+const SESSION_LIMIT = 65536;
+
+// The only reader of session.json. Anything at its path but a regular file
+// of at most 64 KB (a link, a pipe, a folder), or a file that is unreadable,
+// not JSON or not a usable record, reads as no session (stale), never an
+// error, and is never waited on.
 function session(designDir) {
   let s;
   try {
-    s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
+    const file = sessionFile(designDir);
+    const entry = lstatSync(file);
+    if (!entry.isFile() || entry.size > SESSION_LIMIT) return null;
+    // Opened so that a link or pipe put there since the check cannot be followed or waited on.
+    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const bytes = Buffer.alloc(SESSION_LIMIT + 1);
+      const n = readSync(fd, bytes, 0, bytes.length, 0);
+      if (n > SESSION_LIMIT) return null;
+      s = JSON.parse(bytes.toString("utf8", 0, n));
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -56,25 +73,39 @@ function session(designDir) {
   return usable ? s : null;
 }
 
+// The only HTTP request in the CLI, over node:http rather than fetch: fetch
+// abandons any response slower than five minutes, and `wait` must be able to
+// block for hours. Settles exactly once, on the first of: the reply complete
+// ({ status, text }); a request error, the reply cut off before its end, or
+// `limit` milliseconds passing ({ lost }). The limit is 0 for none.
+function send(s, method, path, body, limit = Number(process.env.MOCKUP_TIMEOUT_MS) || 30000) {
+  return new Promise((ok) => {
+    let timer;
+    const settle = (result) => {
+      clearTimeout(timer);
+      req.destroy();
+      ok(result);
+    };
+    const req = request({ host: "127.0.0.1", port: s.port, path, method, headers: body ? { "content-type": "application/json" } : {} }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => settle({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
+      for (const cut of ["aborted", "error", "close"]) res.on(cut, () => settle({ lost: cut }));
+    });
+    req.on("error", (err) => settle({ lost: err.code ?? err.message }));
+    if (limit) timer = setTimeout(() => settle({ lost: "timeout" }), limit);
+    req.end(body ? JSON.stringify(body) : undefined);
+  });
+}
+
 // What the server at s.port answers to /api/ping, or null when nothing
 // readable comes back.
-function ping(s) {
-  return new Promise((ok) => {
-    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", timeout: 2000 }, (res) => {
-      let body = "";
-      res.on("data", (c) => (body += c));
-      res.on("end", () => {
-        try {
-          ok(JSON.parse(body));
-        } catch {
-          ok(null);
-        }
-      });
-    });
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => ok(null));
-    req.end();
-  });
+async function ping(s) {
+  try {
+    return JSON.parse((await send(s, "GET", "/api/ping", undefined, 2000)).text);
+  } catch {
+    return null;
+  }
 }
 
 // True when the server at s.port answers /api/ping with s.id. A pid proves
@@ -87,9 +118,13 @@ async function confirmed(designDir) {
   return (await answers(s)) ? s : null;
 }
 
+// Whether `pid` may be probed or signalled at all: 0 and negative numbers
+// would address process groups, 1 is init, and this command's own process
+// and its parent are never the server, whatever a ping says.
+const signalable = (pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid && pid !== process.ppid;
+
 function alive(pid) {
-  // 0 and negative numbers would address process groups.
-  if (!Number.isInteger(pid) || pid < 1) return false;
+  if (!signalable(pid)) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -119,27 +154,16 @@ const urlOf = (s) => `http://127.0.0.1:${s.port}/`;
 
 async function api(designDir, method, path, body) {
   const s = await confirmed(designDir);
-  if (!s) fail(existsSync(join(designDir, ".runtime", "session.json")) && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
-  // node:http rather than fetch: fetch abandons any response slower than five
-  // minutes, and `wait` must be able to block for hours.
-  const { status, data } = await new Promise((ok) => {
-    const req = request(new URL(path, urlOf(s)), {
-      method,
-      headers: body ? { "content-type": "application/json" } : {},
-    }, (res) => {
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => {
-        try {
-          ok({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch {
-          fail(`${method} ${path}: unreadable response (${res.statusCode})`);
-        }
-      });
-    });
-    req.on("error", (err) => fail(err.code === "EPERM" ? SANDBOX_HINT : `cannot reach the server at ${urlOf(s)}: ${err.code ?? err.message}`, 2));
-    req.end(body ? JSON.stringify(body) : undefined);
-  });
+  if (!s) fail(existsSync(sessionFile(designDir)) && inCodex() ? SANDBOX_HINT : `no server is running in ${designDir}; run \`mockup start\` again`, 2);
+  // Only wait may take as long as it needs.
+  const { status, text, lost } = await send(s, method, path, body, path.startsWith("/api/agent/wait") ? 0 : undefined);
+  if (lost) fail(lost === "EPERM" ? SANDBOX_HINT : `lost the connection to the server at ${urlOf(s)}; run \`mockup status\``, 2);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    fail(`${method} ${path}: unreadable response (${status})`);
+  }
   // A refused or replaced wait has its own exit code.
   if (status === 409 && path.startsWith("/api/agent/wait")) fail(data.error ?? "wait refused", 3);
   if (status >= 400) fail(`${method} ${path}: ${data.error ?? status}`);
@@ -180,6 +204,10 @@ async function start(flags) {
     // A new agent session takes the design over; messages are kept on disk.
     await stop({ dir: designDir, quiet: true });
   }
+  // A server only ever leaves a regular file; anything else there is removed
+  // now, so that a failure to remove it is reported here rather than by the
+  // server it would otherwise stop.
+  if (lstatSync(sessionFile(designDir), { throwIfNoEntry: false })?.isFile() === false) remove(sessionFile(designDir));
 
   const log = openSync(join(designDir, ".runtime", "server.log"), "a");
   const env = { ...process.env, MOCKUP_DIR: designDir, MOCKUP_KIND: flags.once ? "once" : "design", MOCKUP_HARNESS: harness };
@@ -288,20 +316,14 @@ async function status(flags) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Resolves once the stop request is answered, fails or has taken 5 seconds.
-function requestStop(s) {
-  return new Promise((ok) => {
-    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/agent/stop", method: "POST" }, (res) => {
-      res.resume();
-      res.on("end", ok);
-    });
-    setTimeout(() => {
-      req.destroy();
-      ok();
-    }, 5000).unref();
-    req.on("error", ok);
-    req.end();
-  });
+// Removes whatever is at the session.json path, a folder included; failing
+// that, the command fails naming the path.
+function remove(file) {
+  try {
+    rmSync(file, { recursive: true, force: true });
+  } catch (err) {
+    fail(`cannot remove ${file}: ${err.code ?? err.message}`);
+  }
 }
 
 // Asks the server to stop and returns once it has exited, so a start
@@ -309,14 +331,15 @@ function requestStop(s) {
 // its identity is ever signalled, and only when the request did not stop it.
 async function stop(flags) {
   const designDir = findDesignDir(flags);
-  const file = join(designDir, ".runtime", "session.json");
+  const file = sessionFile(designDir);
   const recorded = session(designDir);
   let reply = recorded && (await ping(recorded));
   const s = recorded && reply?.id === recorded.id ? recorded : null;
   let stopped = false;
   if (s) {
     const sent = Date.now();
-    await requestStop(s);
+    // Whether it is answered, fails or takes 5 seconds, what counts is below.
+    await send(s, "POST", "/api/agent/stop", undefined, 5000);
     // The proof that it stopped is that it no longer answers with its id.
     let pid;
     do {
@@ -326,7 +349,8 @@ async function stop(flags) {
     // Its last reported pid is only watched, so that it has exited on return.
     while (reply === null && alive(pid) && Date.now() < sent + 5000) await sleep(50);
     // The pid is the one the server itself just reported; the recorded one
-    // may be missing, or belong to anything.
+    // may be missing, or belong to anything. alive() has already refused a
+    // pid that must never be signalled.
     if (reply?.id === s.id && alive(reply.pid)) {
       process.kill(reply.pid, "SIGTERM");
       for (const deadline = Date.now() + 10000; alive(reply.pid) && Date.now() < deadline; ) await sleep(50);
@@ -336,11 +360,11 @@ async function stop(flags) {
     // A reply with another id comes from a server that is not ours.
     stopped = reply === null;
     // A server ended by signal, or not ours, leaves the file behind.
-    if (session(designDir)?.id === s.id) rmSync(file, { force: true });
+    if (session(designDir)?.id === s.id) remove(file);
   } else {
-    // Nothing answers for this session: the file is stale, and its pid may
+    // Nothing answers for this session: the entry is stale, and its pid may
     // belong to anything, so nothing is signalled.
-    rmSync(file, { force: true });
+    remove(file);
   }
   // The Pi extension stops listening once its link is gone.
   const known = s ?? recorded;

@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -490,4 +490,68 @@ test("the server process writes session.json once, keeps a live server, and repl
   }
   assert.equal((await first.exited).code, 0);
   assert.equal(existsSync(join(sessionDir, ".runtime", "session.json")), false, "a clean stop removes its file");
+});
+
+// A record naming the live in-process server, as JSON of exactly `size` bytes.
+const naming = (size) => {
+  const s = { id: SESSION.id, pid: process.pid, port, url: `http://127.0.0.1:${port}/`, padding: "" };
+  return JSON.stringify({ ...s, padding: "x".repeat(size - JSON.stringify(s).length) });
+};
+
+// What may sit at the session.json path instead of a small regular file.
+const ENTRIES = [
+  ["a link to /dev/zero", (file) => symlinkSync("/dev/zero", file)],
+  ["a link to a missing target", (file) => symlinkSync(join(dirname(file), "missing"), file)],
+  ["a link to a valid session file elsewhere", (file) => {
+    const elsewhere = join(temp("mockup-elsewhere-"), "session.json");
+    writeFileSync(elsewhere, naming(200));
+    symlinkSync(elsewhere, file);
+  }],
+  ["a FIFO", (file) => assert.equal(spawnSync("mkfifo", [file]).status, 0)],
+  ["a valid file of 65537 bytes", (file) => writeFileSync(file, naming(65537))],
+  ["a valid file of 5 MB", (file) => writeFileSync(file, naming(5 * 1024 * 1024))],
+  ["an empty directory", (file) => mkdirSync(file)],
+  ["a directory with files in it", (file) => {
+    mkdirSync(join(file, "inner"), { recursive: true });
+    writeFileSync(join(file, "inner", "x"), "x");
+  }],
+];
+
+for (const [what, make] of ENTRIES) {
+  test(`the server process starts over a session.json that is ${what}`, { skip: process.platform === "win32" }, async () => {
+    const sessionDir = temp("mockup-main-");
+    const file = join(sessionDir, ".runtime", "session.json");
+    mkdirSync(join(sessionDir, ".runtime"));
+    make(file);
+    const child = startMain(sessionDir);
+    let s = null;
+    try {
+      for (let i = 0; i < 100 && s?.pid !== child.pid; i++) {
+        const entry = lstatSync(file, { throwIfNoEntry: false });
+        if (entry?.isFile() && entry.size <= 65536) s = JSON.parse(readFileSync(file, "utf8"));
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.equal(s?.pid, child.pid, `no regular session.json from the server; it ${child.exitCode === null ? "is still running" : `exited ${child.exitCode}`}`);
+    } finally {
+      child.kill("SIGTERM");
+    }
+    const { code, out } = await child.exited;
+    assert.equal(code, 0, out);
+    assert.match(out, /listening on/);
+    assert.equal((await call("GET", "/api/ping")).body.id, SESSION.id, "the live server the entry named is untouched");
+  });
+}
+
+test("the server process leaves a valid session.json of exactly 65536 bytes to the live server it names", async () => {
+  const sessionDir = temp("mockup-main-");
+  const file = join(sessionDir, ".runtime", "session.json");
+  mkdirSync(join(sessionDir, ".runtime"));
+  writeFileSync(file, naming(65536));
+  const child = startMain(sessionDir);
+  const late = new Promise((ok) => setTimeout(() => ok({ code: "still running", out: "" }), 5000));
+  const result = await Promise.race([child.exited, late]);
+  child.kill("SIGKILL");
+  assert.equal(result.code, 0, result.out);
+  assert.match(result.out, /already running/);
+  assert.equal(readFileSync(file, "utf8"), naming(65536), "untouched");
 });

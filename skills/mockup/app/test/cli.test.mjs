@@ -1,8 +1,8 @@
 // The CLI against the real server, each command in its own process.
-import { test, after } from "node:test";
+import { describe, test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -452,8 +452,8 @@ async function standIn(stopMode, ids, pid = "process.pid") {
   return { child, port, exited };
 }
 
-const runAsync = (args) => new Promise((ok) => {
-  const child = spawn(process.execPath, [CLI, ...args], { env: ENV });
+const runAsync = (args, { node = [], env = ENV } = {}) => new Promise((ok) => {
+  const child = spawn(process.execPath, [...node, CLI, ...args], { env });
   let out = "";
   let err = "";
   child.stdout.on("data", (c) => (out += c));
@@ -577,3 +577,258 @@ test("inside Codex's sandbox, a server the command cannot see gets the way out",
   assert.match(say({ CODEX_SANDBOX_NETWORK_DISABLED: "1" }).err, /outside Codex's sandbox.*don't ask again/);
   assert.match(say({}).err, /no server is running/);
 });
+
+// --- what sits at the session.json path ---
+
+// A command that has to return within 5 seconds.
+function quick(args) {
+  const began = Date.now();
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd: tmpdir(), env: ENV, encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+  assert.equal(r.signal, null, `${args[0]} did not return within 5 seconds`);
+  assert.ok(Date.now() - began < 5000, `${args[0]} took ${Date.now() - began} ms`);
+  assert.doesNotMatch(r.stderr, STACK);
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
+
+// The record `s` as JSON of exactly `size` bytes.
+const padded = (s, size) => JSON.stringify({ ...s, padding: "x".repeat(size - JSON.stringify({ ...s, padding: "" }).length) });
+const entry = (file) => lstatSync(file, { throwIfNoEntry: false });
+
+// A real server in a folder of its own, which the entries below name.
+let live = null;
+function liveServer() {
+  if (!live) {
+    const { dir } = start(["--once"]);
+    live = { dir, file: join(dir, ".runtime", "session.json"), s: session(dir) };
+  }
+  return live;
+}
+
+// What is not a regular file of at most 65536 bytes.
+const ENTRIES = [
+  ["a link to /dev/zero", (file) => symlinkSync("/dev/zero", file)],
+  ["a link to a missing target", (file) => symlinkSync(join(dirname(file), "missing"), file)],
+  ["a link to a valid session file elsewhere", (file, real) => symlinkSync(real.file, file)],
+  ["a FIFO", (file) => assert.equal(spawnSync("mkfifo", [file]).status, 0)],
+  ["a valid file of 65537 bytes", (file, real) => writeFileSync(file, padded(real.s, 65537))],
+  ["a valid file of 5 MB", (file, real) => writeFileSync(file, padded(real.s, 5 * 1024 * 1024))],
+  ["an empty directory", (file) => mkdirSync(file)],
+  ["a directory with files in it", (file) => {
+    mkdirSync(join(file, "inner"), { recursive: true });
+    writeFileSync(join(file, "inner", "x"), "x");
+  }],
+];
+
+for (const [what, make] of ENTRIES) {
+  test(`a session.json that is ${what} is stale to status, stop and start`, UNIX, () => {
+    const real = liveServer();
+    const before = readFileSync(real.file);
+    const repo = temp("mockup-entry-");
+    const dir = join(repo, ".design", "d");
+    const file = join(dir, ".runtime", "session.json");
+    const put = () => {
+      mkdirSync(join(dir, ".runtime"), { recursive: true });
+      make(file, real);
+    };
+    put();
+    const status = quick(["status", "--dir", dir]);
+    assert.equal(status.code, 2, status.out);
+    assert.equal(status.err, `mockup: no server is running in ${dir}; run \`mockup start\` again\n`);
+    assert.ok(entry(file), "status leaves the entry");
+    const stop = quick(["stop", "--dir", dir]);
+    assert.equal(stop.code, 0, stop.err);
+    assert.equal(stop.out, `stopped ${dir} (no server was running)\n`);
+    assert.equal(entry(file), undefined, "stop removes the entry");
+    put();
+    const r = quick(["start", "--design", "d", "--repo", repo, "--no-open"]);
+    started.add(dir);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(entry(file).isFile(), "the new server wrote a regular file");
+    const s = session(dir);
+    assert.notEqual(s.id, real.s.id);
+    assert.equal(r.out.match(/^open: (\S+)$/m)[1], `http://127.0.0.1:${s.port}/`);
+    assert.match(quick(["status", "--dir", dir]).out, new RegExp(`server: running at http://127.0.0.1:${s.port}/`));
+    assert.equal(alive(real.s.pid), true, "the server the entry named still runs");
+    assert.deepEqual(readFileSync(real.file), before, "and its session.json is untouched");
+  });
+}
+
+test("a valid session.json of exactly 65536 bytes is read", UNIX, () => {
+  const repo = temp("mockup-entry-");
+  const first = start(["--design", "d", "--repo", repo]);
+  const file = join(first.dir, ".runtime", "session.json");
+  const s = session(first.dir);
+  writeFileSync(file, padded(s, 65536));
+  assert.equal(readFileSync(file).length, 65536);
+  const status = quick(["status", "--dir", first.dir]);
+  assert.equal(status.code, 0, status.err);
+  assert.match(status.out, new RegExp(`server: running at http://127.0.0.1:${s.port}/`));
+  const again = quick(["start", "--design", "d", "--repo", repo, "--no-open"]);
+  assert.equal(again.code, 0, again.err);
+  assert.equal(again.out, first.out);
+  assert.equal(readFileSync(join(first.dir, ".runtime", "server.log"), "utf8").match(/listening on/g).length, 1, "no new server");
+  const stop = quick(["stop", "--dir", first.dir]);
+  assert.equal(stop.code, 0, stop.err);
+  assert.equal(stop.out, `stopped ${first.dir}\n`);
+  assert.equal(alive(s.pid), false);
+});
+
+for (const [what, make] of ENTRIES.slice(-2)) {
+  test(`a session.json that is ${what} and cannot be removed fails stop and start with one line`, { ...UNIX, skip: UNIX.skip || process.getuid?.() === 0 }, () => {
+    const repo = temp("mockup-entry-");
+    const dir = join(repo, ".design", "d");
+    const file = join(dir, ".runtime", "session.json");
+    mkdirSync(join(dir, ".runtime"), { recursive: true });
+    make(file);
+    chmodSync(join(dir, ".runtime"), 0o555);
+    try {
+      assert.equal(quick(["status", "--dir", dir]).code, 2);
+      for (const args of [["stop", "--dir", dir], ["start", "--design", "d", "--repo", repo, "--no-open"]]) {
+        const r = quick(args);
+        assert.equal(r.code, 1, args[0]);
+        assert.equal(r.err, `mockup: cannot remove ${file}: EACCES\n`, args[0]);
+        assert.equal(r.out, "", args[0]);
+      }
+      assert.ok(entry(file).isDirectory());
+      assert.equal(existsSync(join(dir, ".runtime", "server.log")), false, "start spawned no server");
+    } finally {
+      chmodSync(join(dir, ".runtime"), 0o755);
+    }
+  });
+}
+
+// --- pids that are never signalled ---
+
+// A preload for the CLI: process.kill records each call and sends nothing.
+// It also writes down the CLI's own pid and its parent's for the stand-in.
+function recorder() {
+  const dir = temp("mockup-recorder-");
+  const made = { preload: join(dir, "recorder.mjs"), calls: join(dir, "calls.jsonl"), pids: join(dir, "pids.json") };
+  writeFileSync(made.preload, `
+    import { appendFileSync, writeFileSync } from "node:fs";
+    writeFileSync(${JSON.stringify(made.pids)}, JSON.stringify({ self: process.pid, parent: process.ppid }));
+    process.kill = (pid, signal) => {
+      appendFileSync(${JSON.stringify(made.calls)}, JSON.stringify([pid ?? null, signal ?? null]) + "\\n");
+      return true;
+    };`);
+  return made;
+}
+
+describe("stop never signals or probes a pid it must not", { concurrency: 12, timeout: 120_000 }, () => {
+  const reported = (key) => (made) => `JSON.parse(require("fs").readFileSync(${JSON.stringify(made.pids)}, "utf8")).${key}`;
+  const PIDS = [
+    ["0", () => "0"], ["1", () => "1"], ["-1", () => "-1"], ["1.5", () => "1.5"], ['"abc"', () => '"abc"'], ["null", () => "null"],
+    ["the CLI's own", reported("self")], ["the CLI's parent's", reported("parent")],
+  ];
+  for (const mode of ["hang", "500", "200"]) {
+    for (const [what, pid] of PIDS) {
+      test(`ping pid ${what}, stop request ${mode}`, UNIX, async () => {
+        const made = recorder();
+        const server = await standIn(mode, ["the-id"], pid(made));
+        const dir = temp("mockup-standin-");
+        staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+        const began = Date.now();
+        const r = await runAsync(["stop", "--dir", dir], { node: ["--import", made.preload] });
+        assert.ok(existsSync(made.pids), "the recorder was loaded");
+        assert.equal(existsSync(made.calls) ? readFileSync(made.calls, "utf8") : "", "", "process.kill was called");
+        assert.ok(Date.now() - began < 12_000, `took ${Date.now() - began} ms`);
+        assert.equal(r.code, 1);
+        assert.equal(r.err, `mockup: the server at http://127.0.0.1:${server.port}/ did not stop\n`);
+        assert.equal(r.out, "");
+        assert.equal(await state(server), "alive");
+      });
+    }
+  }
+});
+
+// --- replies that never finish ---
+
+// A stand-in server in its own process that answers /api/ping (when `pings`)
+// and gives every other request the headers and part of a JSON body. `then`
+// says what follows: "killed" leaves that to the test, which kills it 200 ms
+// after the first partial reply; "destroyed" destroys the socket; "silent"
+// sends nothing at all, not even the headers.
+async function cutOff(then, pings = true) {
+  const script = `
+    const server = require("http").createServer((req, res) => {
+      if (req.url === "/api/ping" && ${pings}) return res.end(JSON.stringify({ id: "the-id", pid: process.pid }));
+      if (${JSON.stringify(then)} === "silent") return;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"messages":[{"text":"par', () => {
+        if (${JSON.stringify(then)} === "destroyed") setTimeout(() => res.socket.destroy(), 50);
+        else console.log("partial");
+      });
+    });
+    server.listen(0, "127.0.0.1", () => console.log(server.address().port));`;
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+  strangers.push(child);
+  let text = "";
+  let partial;
+  const sentPartial = new Promise((ok) => (partial = ok));
+  const port = await new Promise((ok) => child.stdout.on("data", (c) => {
+    text += c;
+    const lines = text.split("\n");
+    if (lines.length > 1) ok(Number(lines[0]));
+    if (lines.includes("partial")) partial();
+  }));
+  if (then === "killed") sentPartial.then(() => setTimeout(() => child.kill("SIGKILL"), 200));
+  return { child, port, exited: new Promise((ok) => child.on("exit", ok)) };
+}
+
+const lost = (port) => `mockup: lost the connection to the server at http://127.0.0.1:${port}/; run \`mockup status\`\n`;
+
+for (const then of ["killed", "destroyed"]) {
+  for (const command of ["status", "wait", "say", "show"]) {
+    test(`${command} against a server whose reply is cut off (${then}) exits 2 with one line`, UNIX, async () => {
+      const server = await cutOff(then);
+      const dir = temp("mockup-cut-");
+      staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+      const r = await runAsync([command, ...{ say: ["hello"], show: ["pages/x.html"] }[command] ?? [], "--dir", dir]);
+      assert.equal(r.err, lost(server.port));
+      assert.equal(r.code, 2);
+      assert.equal(r.out, "");
+    });
+  }
+
+  test(`stop against a server whose reply is cut off (${then}) ends with the server gone`, UNIX, async () => {
+    const server = await cutOff(then);
+    const dir = temp("mockup-cut-");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const r = await runAsync(["stop", "--dir", dir]);
+    assert.equal(r.err, "");
+    assert.equal(r.code, 0);
+    assert.equal(r.out, `stopped ${dir}\n`);
+    assert.equal(await state(server), "gone");
+    assert.equal(entry(join(dir, ".runtime", "session.json")), undefined);
+  });
+
+  test(`start over a server whose ping reply is cut off (${then}) starts a real server`, UNIX, async () => {
+    const server = await cutOff(then, false);
+    const repo = temp("mockup-cut-");
+    const dir = join(repo, ".design", "d");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const r = await runAsync(["start", "--design", "d", "--repo", repo, "--no-open"]);
+    started.add(dir);
+    assert.equal(r.err, "");
+    assert.equal(r.code, 0);
+    const s = session(dir);
+    assert.notEqual(s.id, "the-id");
+    assert.equal(r.out.match(/^open: (\S+)$/m)[1], `http://127.0.0.1:${s.port}/`);
+    assert.equal(mockup(["status", "--dir", dir]).code, 0);
+  });
+}
+
+for (const command of ["status", "say", "show"]) {
+  test(`${command} gives up on a server that accepts the request and sends nothing`, UNIX, async () => {
+    const server = await cutOff("silent");
+    const dir = temp("mockup-cut-");
+    staleSession(dir, { id: "the-id", pid: server.child.pid, port: server.port });
+    const began = Date.now();
+    const r = await runAsync([command, ...{ say: ["hello"], show: ["pages/x.html"] }[command] ?? [], "--dir", dir], { env: { ...ENV, MOCKUP_TIMEOUT_MS: "1000" } });
+    const took = Date.now() - began;
+    assert.equal(r.err, lost(server.port));
+    assert.equal(r.code, 2);
+    assert.equal(r.out, "");
+    assert.ok(took >= 1000 && took < 5000, `took ${took} ms`);
+  });
+}
