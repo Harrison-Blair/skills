@@ -7,65 +7,85 @@ Help the user develop their plan through questions until you reach a shared unde
 
 Bring every substantive **design decision** to the user, including goals, scope, behavior, architecture, constraints, and tradeoffs. Handle incidental wording, formatting, and mechanical details autonomously. Respect established answers and preferences; revisit them only when new evidence or a user correction warrants it.
 
-Ask **1–5 related questions per round**, then wait for the user's answers. Ask only questions whose prerequisites are settled. Keep remaining questions for later rounds and adjust them as answers arrive. Do not silently choose answers to unresolved design decisions; let the user settle or explicitly defer them.
+Ask **up to 4 related questions per round**, then wait for the user's answers. Ask only questions whose prerequisites are settled. Keep remaining questions for later rounds and adjust them as answers arrive. Do not silently choose answers to unresolved design decisions; let the user settle or explicitly defer them.
 
 Investigate discoverable **facts** using available tools before asking questions that depend on them. Cite relevant evidence and distinguish verified facts from assumptions. If evidence is unavailable, explain the uncertainty rather than presenting a guess as fact.
 
-When an **experiment** could clarify a detail or test an idea, offer it with its purpose and expected insight, then wait for the user's agreement before running it. Propose a subagent only when delegation is available and useful; otherwise propose local execution. Keep execution within existing authorization and use the results to inform subsequent questions.
+## Experiments
+
+When an **experiment** could clarify a detail or test an idea, and it is fast and either read-only or confined to a scratch directory, run it before asking and report the result. Offer anything that edits the project, costs money, or spawns subagents as an option on the question it would inform, `Test it first: {what, rough cost}`, and run it only if the user picks that option. Keep every experiment within existing authorization.
+
+Report results under the question they inform:
+
+```
+**Tested:** {what was run}
+**Found:** {result}
+{How this changes the recommendation}
+```
+
+## Each round
+
+Present a round in two steps: context as text, then the questions.
+
+**1. Context as text.** Open with a recap, then give each question its own section.
+
+- **Recap:** a bulleted **Settled** list of decisions so far, then a one-line **This round** naming what the round covers. Compress settled items to a few words; group or summarize older ones as the list grows. Omit **Settled** when nothing is settled yet.
+- **Per question:** a `## {N}. {Question}` heading followed by short bold-labeled sections. Use markdown emphasis to highlight the key fact or tradeoff. Omit empty sections.
+  - **Now** or **Known** -- the relevant facts, with sources.
+  - **Picture** -- a small diagram or table in a fenced code block.
+  - **Why it matters** -- the consequences and main tradeoffs, plus any assumption or uncertainty that could change the choice.
+  - **Other options** -- viable options beyond the fourth, if any.
+
+**2. Then ask.** If the harness provides a structured question tool, ask through it after the text. Keep each question short and give each option a one-line reason. Put the recommended option first and mark it recommended. Offer up to 4 options; name any further viable options in the context text. If no question tool is available, list the options under each question's section, lettered A, B, C, and invite a reply such as `1A, 2B`.
 
 ## Writing questions
 
-**Explain simply.** Write each question and its reasoning in plain language a newcomer to the topic could follow. Define a term the first time it appears if the user may not know it. Keep sentences short. Do not assume the user remembers earlier context; restate the one fact the question hinges on.
+**Keep it simple and short.** Write in plain language a newcomer to the topic could follow. Define a term the first time it appears if the user may not know it. Keep sentences short. Do not assume the user remembers earlier context; restate the one fact the question hinges on.
 
-**Illustrate when it helps.** When a question involves a flow, a relationship, a data model, or a comparison between shapes of a solution, draw it as a small terminal-friendly diagram inside a fenced code block: boxes and arrows, a tree, a short table, or a timeline. Keep each diagram under about fifteen lines and label every box. Skip the diagram when words alone are clearer.
+**Draw by default.** Give each question a picture whenever it involves a flow, a relationship, a data model, a layout, or a comparison: boxes and arrows, a tree, a short table, or a timeline. Keep it terminal-friendly, under about fifteen lines, and label every box. Skip it only for trivial questions where words alone are clearer.
 
-**Give context for the decision.** Include a Reasoning section before Answers in every question, after Picture when present. Explain why the question matters to the user's goal, how the relevant facts affect the choice, and the main tradeoffs or practical consequences. Identify assumptions or uncertainty that could change the choice. Give enough context for the user to judge the options without prior technical knowledge; scale the detail to the decision rather than merely repeating the question or recommendation.
+**Give enough context to judge.** Explain why the decision matters to the user's goal and what each choice leads to in practice. Scale the detail to the decision rather than repeating the question or the recommendation.
 
-**Offer every viable answer.** List each option that is genuinely workable, not just two. Put the recommended option first, mark it `(recommended)`, and give one or two sentences on why. Give each alternative one sentence on when it would be the better choice. Always include a recommendation, even for open-ended questions. The user may answer with their own option instead of choosing from the list.
+**Offer every viable answer.** Include each genuinely workable option, not just two. Always recommend one and say why in a sentence; give each alternative a sentence on when it would be the better choice. The user may answer with their own option.
 
-Use the following structure flexibly. Number questions within each round. Include sourced facts when useful and omit empty sections.
+## Example round
 
-```
-Question: {Number}. {Question in plain language}
+Context as text:
 
-Facts:
-- {Relevant verified fact} {Source(s)}
+````
+**Settled**
+- Sync runs from the setup script
+- One clone per machine is the common case
 
-Picture:
-  {optional diagram, table, or tree}
+**This round:** where the sync lock lives
 
-Reasoning:
-{Why this decision matters, how the facts affect it, and the tradeoffs or consequences the user needs to weigh. Note relevant assumptions or uncertainty.}
+## 1. Where should the lock file live?
 
-Answers:
-- {Option} (recommended) -- {Why, in plain words}
-- {Alternative} -- {When this is the better choice}
-- {Alternative} -- {When this is the better choice}
-```
-
-Example round:
-
-```
-Question: 1. Where should the lock file live?
-
-Facts:
-- setup.sh writes .sync.lock inside the clone directory (scripts/setup.sh:142)
+**Known**
+- setup.sh writes `.sync.lock` inside the clone (scripts/setup.sh:142)
 - Two clones on one machine can sync at the same time today (README.md:81)
 
-Picture:
-  per-clone                  global
-  ~/source/skills/.sync.lock ~/.agents/.sync.lock
-  ~/other/skills/.sync.lock       ^
-       ^          ^               |
-     sync A     sync B      sync A + sync B
-
-Reasoning:
-A lock prevents two syncs from changing the same files at once. Its location determines which syncs must wait for each other. A lock in each clone lets separate clones sync at the same time; a global lock makes all clones take turns. The choice depends on whether those clones modify shared files: if they do, separate locks may leave conflicts unprotected. Without a lock, the sync process would need a reliable way to detect and recover from conflicts.
-
-Answers:
-- Per clone (recommended) -- matches where the lock is now and keeps clones independent
-- Global under ~/.agents -- better if two clones must never run at once
-- No lock; retry on conflict -- better if syncs are rare and short
+**Picture**
+```
+  per clone                     global
+  clone A ─▶ A/.sync.lock       clone A ─┐
+  clone B ─▶ B/.sync.lock       clone B ─┴─▶ ~/.agents/.sync.lock
 ```
 
-Once all substantive design decisions are settled or explicitly deferred, summarize the agreed decisions, assumptions, and remaining unknowns. Ask the user to confirm shared understanding. Present this summary as a bulleted list. If they correct the summary, revisit the affected questions and update it until they agree. Invoking this skill alone does not authorize implementation.
+**Why it matters**
+The lock decides **which syncs wait for each other**. Per-clone locks let clones sync in parallel but leave *shared files* unprotected; a global lock makes every clone take turns.
+````
+
+Then the question tool:
+
+```
+Where should the lock file live?
+- Per clone (recommended) -- matches today's location and keeps clones independent
+- Global under ~/.agents -- better if clones write shared files
+- No lock; retry on conflict -- better if syncs are rare and short
+- Test it first: run two real syncs against a spare clone (~5 min, writes files)
+```
+
+## Wrapping up
+
+Once all substantive design decisions are settled or explicitly deferred, summarize the agreed decisions, assumptions, and remaining unknowns as a bulleted list. Ask the user to confirm shared understanding, through the question tool when available. If they correct the summary, revisit the affected questions and update it until they agree. Invoking this skill alone does not authorize implementation.
