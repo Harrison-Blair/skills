@@ -10,6 +10,7 @@ Usage:
     echo "text" | ste-lint.py [--json]
     ste-lint.py --baseline 5 FILE      # pass unless hard violations exceed 5
     ste-lint.py --disable passive-voice,present-perfect FILE
+    ste-lint.py --glossary BASE.md --glossary STE-GLOSSARY.md FILE
     ste-lint.py --selftest
 
 Exit 1 when hard ("advisory-free") violations exceed the baseline (default 0).
@@ -127,6 +128,24 @@ def _split_table_row(line):
     return cells
 
 
+def parse_glossary(text):
+    """Map each glossary term to its "Do not use" words.
+
+    Reads the rows of a `| Term | Meaning | Do not use |` table and skips the
+    header and separator rows. The third cell is a comma-separated list.
+    """
+    glossary = {}
+    for line in text.splitlines():
+        cells = _split_table_row(line)
+        if not cells or len(cells) < 3:
+            continue
+        term = cells[0][0].lower()
+        if term == "term" or TABLE_SEPARATOR_CELL.match(term):
+            continue
+        glossary[term] = [w.strip().lower() for w in cells[2][0].split(",") if w.strip()]
+    return glossary
+
+
 def _markdown_table_cells(lines):
     """Map ordinary Markdown table rows to their prose cells.
 
@@ -238,7 +257,15 @@ def _dangling_conjunction_findings(text, filename):
     return findings
 
 
-def lint(text, filename="<stdin>"):
+def lint(text, filename="<stdin>", glossary=None):
+    glossary = glossary or {}
+    # glossary terms carry their own defined meaning, so they never rotate, and
+    # banned words already get a glossary-term finding
+    listed = set(glossary) | {w for words in glossary.values() for w in words}
+    synonym_groups = [tuple(b for b in g if b not in listed) for g in SYNONYM_GROUPS]
+    banned = [(_word_re(re.escape(word)), word, term)
+              for term, words in glossary.items() for word in words
+              if word not in glossary]
     findings = []
     words_total = 0
     in_fence = False
@@ -266,7 +293,14 @@ def lint(text, filename="<stdin>"):
                                      "col": source_column + m.start() + 1,
                                      "rule": rule_id, "level": level,
                                      "match": m.group(0), "message": msg})
-            for gi, group in enumerate(SYNONYM_GROUPS):
+            for pattern, word, term in banned:
+                for m in pattern.finditer(line):
+                    findings.append({"file": filename, "line": lineno,
+                                     "col": source_column + m.start() + 1,
+                                     "rule": "glossary-term", "level": "advisory-free",
+                                     "match": m.group(0),
+                                     "message": f"The glossary term is '{term}'. Do not use '{word}'."})
+            for gi, group in enumerate(synonym_groups):
                 for base in group:
                     if (gi, base) in seen_synonyms:
                         continue
@@ -284,7 +318,7 @@ def lint(text, filename="<stdin>"):
                                      "match": f"{n} words",
                                      "message": f"Sentence has {n} words (cap {MAX_WORDS}). Split it."})
     # synonym rotation: flag each member after the first, at its first occurrence
-    for gi, group in enumerate(SYNONYM_GROUPS):
+    for gi, group in enumerate(synonym_groups):
         present = [(seen_synonyms[(gi, b)], b) for b in group if (gi, b) in seen_synonyms]
         if len(present) > 1:
             present.sort()  # document order
@@ -443,6 +477,30 @@ def selftest():
     # per-file labels
     findings, _ = lint("a; b", filename="x.md")
     assert findings[0]["file"] == "x.md"
+    # glossary: a term defined with its own meaning is not a rotated synonym,
+    # and each "Do not use" word is a hard violation that names the term
+    glossary = parse_glossary(
+        "# STE glossary\n\n"
+        "| Term | Meaning | Do not use |\n"
+        "| --- | --- | --- |\n"
+        "| check | Inspect a result. | |\n"
+        "| verify | Record a passed check with `fledge task verify`. | validate, confirm |\n"
+    )
+    assert glossary == {"check": [], "verify": ["validate", "confirm"]}, glossary
+    findings, _ = lint("Check the output. Verify the task.", glossary=glossary)
+    assert not any(f["rule"] == "synonym-rotation" for f in findings), findings
+    findings, _ = lint("Validate the task. Confirmed twice.", glossary=glossary)
+    terms = [f for f in findings if f["rule"] == "glossary-term"]
+    assert [f["match"] for f in terms] == ["Validate", "Confirmed"], terms
+    assert "'verify'" in terms[0]["message"] and terms[0]["level"] == "advisory-free"
+    # a banned word is reported once, as a glossary-term, not again as rotation
+    assert not any(f["rule"] == "synonym-rotation" for f in findings), findings
+    # a project glossary can define a word that the base glossary bans
+    findings, _ = lint("Launch the agent.", glossary={"start": ["launch"], "launch": []})
+    assert not any(f["rule"] == "glossary-term" for f in findings), findings
+    # words inside inline code are names, not prose
+    findings, _ = lint("Run `validate` first.", glossary=glossary)
+    assert not any(f["rule"] == "glossary-term" for f in findings), findings
     print("selftest OK")
 
 
@@ -453,6 +511,7 @@ def main(argv):
     as_json = "--json" in argv
     baseline = 0
     disabled = set()
+    glossary = {}
     paths = []
     i = 0
     while i < len(argv):
@@ -463,6 +522,10 @@ def main(argv):
         elif a == "--disable":
             i += 1
             disabled = set(argv[i].split(","))
+        elif a == "--glossary":
+            # later files win, so pass the user-level base before the project glossary
+            i += 1
+            glossary.update(parse_glossary(open(argv[i], encoding="utf-8").read()))
         elif not a.startswith("--"):
             paths.append(a)
         i += 1
@@ -470,11 +533,11 @@ def main(argv):
     findings, words_total = [], 0
     if paths:
         for p in paths:
-            f, w = lint(open(p, encoding="utf-8").read(), filename=p)
+            f, w = lint(open(p, encoding="utf-8").read(), filename=p, glossary=glossary)
             findings.extend(f)
             words_total += w
     else:
-        findings, words_total = lint(sys.stdin.read())
+        findings, words_total = lint(sys.stdin.read(), glossary=glossary)
 
     findings = [f for f in findings if f["rule"] not in disabled]
     hard_count = sum(1 for f in findings if f["level"] == "advisory-free")

@@ -1,7 +1,10 @@
 ---
 name: asd-ste100
 description: "Use when English text must be parsed without a human to resolve ambiguity — tool descriptions, error messages, inter-agent instructions, system prompts, status reports — and misreading has a real cost, or when text reads as dense, hedged, or easy to misparse. Triggers: disambiguate, STE100 rewrite, apply Simplified Technical English, plain-language rewrite, controlled-language rewrite, rewrite so an agent cannot misread this. Not for creative or marketing copy."
-version: 0.4.0
+license: MIT
+metadata:
+  version: 0.4.0-glossary
+  upstream: danyuchn/asd-ste100-skill@32511c6
 ---
 
 # Simplified Technical English (ASD-STE100)
@@ -21,13 +24,31 @@ This skill is not for creative or marketing copy — STE is deliberately flat an
 
 ## Two Modes
 
-Pick a mode before rewriting. If the user does not say which, infer it from the text type. Keep the choice internal unless the user asks for the rule table (see Output Format).
+Pick a mode before rewriting. If the user does not say which, infer it from the text type. Text that an agent reads as instructions (agent profiles, `AGENTS.md`, `CLAUDE.md`, skills, task briefs, inter-agent messages, tool descriptions, error messages) is always Strict. Keep the choice internal unless the user asks for the rule table (see Output Format).
 
 **Strict** — procedures, error messages, tool and function descriptions, inter-agent instructions, safety text. Anywhere a wrong reading has a cost. Apply every rule below, including the hard length caps and one-word-one-meaning discipline.
 
 **STE-flavored** — READMEs, PR descriptions, changelogs, explanatory prose. Apply the structural rules in full and treat the lexical rules as advisory (see Core Rewrite Rules for that split). In practice that means keeping the sentence length caps, active voice, simple tenses, no phrasal verbs, no semicolons, no nominalization and no marketing adjectives, while dropping the one-word-one-meaning lockdown: prose needs some range, and a strict rewrite of prose reads as a personality transplant rather than a clarification.
 
 The two modes and the structural/lexical split are the same distinction seen from two directions. The split says which rules this skill can verify without ASD's dictionary. The modes say which of them to enforce for a given kind of text.
+
+## Glossaries
+
+A glossary is the project-specific dictionary that STE allows beyond its base dictionary. It fixes one meaning for each term and names the synonyms that must not replace it. Load the glossaries before you rewrite or lint:
+
+1. The user-level base: `references/base-glossary.md` in this skill.
+2. The project glossary: `STE-GLOSSARY.md` at the repository root, if the file exists. The project glossary adds terms and overrides the base.
+
+Both files use one Markdown table with the columns `Term | Meaning | Do not use`. The third column is a comma-separated list, or empty. A word that the project glossary defines as a term is never banned, even if the base bans it.
+
+Apply the glossaries as hard rules in both modes:
+
+- Use each term only with its glossary meaning.
+- Replace each "Do not use" word with its term, unless the word is a literal name (a command, flag, or identifier). Put literal names in inline code.
+- Do not treat two glossary terms as synonyms. "check" and "verify" can both be correct when the glossary gives them different meanings.
+- If a word needs a fixed meaning and no glossary defines it, suggest a one-line glossary entry. Do not change the glossary without the user's approval.
+
+Pass both files to the linter, base first: `scripts/ste-lint.py --glossary references/base-glossary.md --glossary STE-GLOSSARY.md FILE`. A glossary file itself does not lint clean, because its last column quotes the banned words.
 
 ## Source and Scope
 
@@ -88,7 +109,7 @@ These six habits cover most of what makes machine-written English hard to parse.
 
 1. Pick the mode (Strict or STE-flavored). Say which only when the user asked for the rule table — see Output Format.
 2. Read the input text once for meaning — do not start rewriting before you understand what it must still say afterward.
-3. Walk it sentence by sentence. Flag every rule violation from the Core Rewrite Rules tables and every habit from the Scan Checklist. In STE-flavored mode, flag the lexical rules but do not enforce them. For a mechanical first pass over the structural rules, run `scripts/ste-lint.py` (stdin or file args, `--json` for structured output); it checks semicolons, sentence length, phrasal verbs, nominalization, marketing adjectives, synonym rotation, dangling-conjunction in supported list items, passive voice, and compound tenses, and by design never flags hedges or modality. `--baseline N` tolerates N hard violations (for adopting on existing docs); `--disable rule1,rule2` silences named rules.
+3. Walk it sentence by sentence. Flag every rule violation from the Core Rewrite Rules tables and every habit from the Scan Checklist. In STE-flavored mode, flag the lexical rules but do not enforce them. For a mechanical first pass over the structural rules, run `scripts/ste-lint.py` with the glossaries (see Glossaries), on stdin or file arguments, and add `--json` for structured output; it checks semicolons, sentence length, phrasal verbs, nominalization, marketing adjectives, synonym rotation, dangling-conjunction in supported list items, passive voice, and compound tenses, and by design never flags hedges or modality. `--baseline N` tolerates N hard violations (for adopting on existing docs); `--disable rule1,rule2` silences named rules.
 4. Rewrite each flagged sentence to fix the violation while preserving the original meaning exactly. If a rewrite would drop necessary precision (a safety condition, a scope qualifier, a number), keep the longer phrasing and flag it instead of silently simplifying.
    - **Check modality before you commit to a rewrite.** Hedges ("may", "could", "sometimes", "is likely to") carry the author's confidence, and confidence is content. A shorter sentence that upgrades a hedge to a fact is not a simplification — it is a different claim. This is the most common way a well-intentioned STE rewrite goes wrong, because hedges are exactly what a length cap tempts you to cut.
    - Never add a fact the source did not state. A rewrite that reads better because it supplies a cause, a frequency, or a mechanism has stopped being a rewrite.
@@ -136,4 +157,9 @@ Follow the table with a one-line note on anything you deliberately did **not** s
 
 - **`references/writing-rules.md`** — fuller summary of the 9 rule sections and dictionary structure, with citations to the official standard and secondary sources.
 - **`examples/before-after.md`** — worked examples, including official STE examples and agent-output examples built for this skill.
-- **`scripts/ste-lint.py`** — deterministic, stdlib-only linter for the structural rules, including dangling-conjunction in supported list items, plus a synonym-rotation check (one word, one meaning) scoped per file. Exit 1 when hard violations exceed `--baseline` (default 0); advisory findings (passive voice, compound tenses) never fail the run; `--disable` silences named rules. It never flags hedges or modality: those are content, not style, and `--selftest` asserts that "may have failed" passes clean.
+- **`references/base-glossary.md`** — the user-level base glossary. See Glossaries.
+- **`scripts/ste-lint.py`** — deterministic, stdlib-only linter for the structural rules, including dangling-conjunction in supported list items, plus a synonym-rotation check (one word, one meaning) scoped per file. With `--glossary FILE` (repeatable, later files win) it reports each "Do not use" word as a hard `glossary-term` violation and exempts glossary terms from synonym rotation. Exit 1 when hard violations exceed `--baseline` (default 0); advisory findings (passive voice, compound tenses) never fail the run; `--disable` silences named rules. It never flags hedges or modality: those are content, not style, and `--selftest` asserts that "may have failed" passes clean.
+
+## Fork
+
+This skill is a fork of [danyuchn/asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) at commit `32511c6` (MIT, see `LICENSE`). The fork adds glossary support (the Glossaries section, `references/base-glossary.md`, and the linter `--glossary` option) and makes agent instructions always Strict.
