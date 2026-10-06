@@ -86,6 +86,17 @@ def _word_re(base):
     return re.compile(r"\b" + base + r"(?:s|es|ed|d|ing)?\b", re.I)
 
 
+def _glossary_word_re(word):
+    """Match a banned word and its regular inflections."""
+    forms = {word, word + "s", word + "es", word + "ed", word + "d", word + "ing"}
+    if word.endswith("e"):
+        forms.add(word[:-1] + "ing")
+    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
+        forms |= {word[:-1] + "ies", word[:-1] + "ied"}
+    alternation = "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True))
+    return re.compile(r"\b(?:" + alternation + r")\b", re.I)
+
+
 def _leading_spaces(line):
     return len(line) - len(line.lstrip(" "))
 
@@ -263,7 +274,7 @@ def lint(text, filename="<stdin>", glossary=None):
     # banned words already get a glossary-term finding
     listed = set(glossary) | {w for words in glossary.values() for w in words}
     synonym_groups = [tuple(b for b in g if b not in listed) for g in SYNONYM_GROUPS]
-    banned = [(_word_re(re.escape(word)), word, term)
+    banned = [(_glossary_word_re(word), word, term)
               for term, words in glossary.items() for word in words
               if word not in glossary]
     findings = []
@@ -281,7 +292,8 @@ def lint(text, filename="<stdin>", glossary=None):
             continue
         segments = table_cells.get(lineno - 1, [(raw_line, 0)])
         for segment, source_column in segments:
-            line = INLINE_CODE.sub("", segment)
+            # blank inline code to its own width, so columns after it stay true
+            line = INLINE_CODE.sub(lambda m: " " * len(m.group(0)), segment)
             words_total += len(line.split())
             for rule_id, level, pattern, msg in RULES:
                 for m in pattern.finditer(line):
@@ -495,13 +507,59 @@ def selftest():
     assert "'verify'" in terms[0]["message"] and terms[0]["level"] == "advisory-free"
     # a banned word is reported once, as a glossary-term, not again as rotation
     assert not any(f["rule"] == "synonym-rotation" for f in findings), findings
+    # natural inflections: -e drops before -ing/-ed, -y becomes -ies/-ied
+    findings, _ = lint("Validating it. Retrieves it. Modifies it. Modified it. Validated it.",
+                       glossary={"check": ["validate"], "get": ["retrieve"], "change": ["modify"]})
+    terms = [f["match"] for f in findings if f["rule"] == "glossary-term"]
+    assert terms == ["Validating", "Retrieves", "Modifies", "Modified", "Validated"], terms
+    # inline code keeps its width, so later columns stay true
+    findings, _ = lint("Run `validate`. Confirm the result.", glossary=glossary)
+    assert [f["col"] for f in findings if f["rule"] == "glossary-term"] == [17], findings
     # a project glossary can define a word that the base glossary bans
     findings, _ = lint("Launch the agent.", glossary={"start": ["launch"], "launch": []})
     assert not any(f["rule"] == "glossary-term" for f in findings), findings
     # words inside inline code are names, not prose
     findings, _ = lint("Run `validate` first.", glossary=glossary)
     assert not any(f["rule"] == "glossary-term" for f in findings), findings
+    _selftest_cli()
     print("selftest OK")
+
+
+def _selftest_cli():
+    """--glossary loads files, later files win, and both input paths use them."""
+    import contextlib
+    import io
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        base = os.path.join(d, "base.md")
+        project = os.path.join(d, "project.md")
+        text = os.path.join(d, "text.md")
+        with open(base, "w", encoding="utf-8") as f:
+            f.write("| Term | Meaning | Do not use |\n| --- | --- | --- |\n"
+                    "| start | Begin. | launch |\n")
+        with open(project, "w", encoding="utf-8") as f:
+            f.write("| Term | Meaning | Do not use |\n| --- | --- | --- |\n"
+                    "| launch | Open an agent pane. | |\n| stop | End. | halt |\n")
+        with open(text, "w", encoding="utf-8") as f:
+            f.write("Launch the agent. Halt it.\n")
+
+        def run(args, stdin=None):
+            out = io.StringIO()
+            saved = sys.stdin
+            if stdin is not None:
+                sys.stdin = io.StringIO(stdin)
+            try:
+                with contextlib.redirect_stdout(out):
+                    main(args + ["--json"])
+            finally:
+                sys.stdin = saved
+            return [v["match"] for v in json.loads(out.getvalue())["violations"]
+                    if v["rule"] == "glossary-term"]
+
+        assert run(["--glossary", base, text]) == ["Launch"]
+        assert run(["--glossary", base, "--glossary", project, text]) == ["Halt"]
+        assert run(["--glossary", base], stdin="Launch it.") == ["Launch"]
 
 
 def main(argv):
