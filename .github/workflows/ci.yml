@@ -95,12 +95,14 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: skills/mockup/app/package-lock.json
-      # The CLI installs and builds the app on first start; doing it here keeps
-      # the parallel test files from reinstalling under each other.
-      - name: Install and build the app
+      # The CLI and server need no packages: start and stop before installing.
+      - name: Start and stop with nothing installed
         run: |
-          node bin/mockup.mjs start --design ci --repo "$RUNNER_TEMP/mockup-ci" --no-open --harness claude
-          node bin/mockup.mjs stop --dir "$RUNNER_TEMP/mockup-ci/.design/ci"
+          dir=$(node bin/mockup.mjs start --once --no-open --harness claude | sed -n 's/^dir: //p')
+          test -n "$dir"
+          node bin/mockup.mjs stop --dir "$dir"
+      - name: Install packages
+        run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Run tests

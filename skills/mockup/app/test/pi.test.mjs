@@ -1,9 +1,9 @@
 // The Pi extension (pi/mockup/index.ts at the repo root) against a real
 // mockup server, with a stand-in for Pi's extension API.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +26,11 @@ function fakePi({ idle }) {
   };
 }
 
+const temps = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
 const until = async (check, what) => {
   for (let i = 0; i < 100; i++) {
     if (check()) return;
@@ -36,8 +41,10 @@ const until = async (check, what) => {
 
 test("the Pi extension hands browser messages to the agent, once each, and stops with the session", async () => {
   const home = mkdtempSync(join(tmpdir(), "mockup-home-"));
+  temps.push(home);
   // Real path, as the CLI sees its working directory (macOS links /var).
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mockup-pi-repo-")));
+  temps.push(repo);
   process.env.MOCKUP_HOME = home;
   const env = { ...process.env, MOCKUP_HOME: home, PI_SESSION_ID: "pi-session-1" };
   delete env.CODEX_THREAD_ID;
@@ -56,12 +63,12 @@ test("the Pi extension hands browser messages to the agent, once each, and stops
     assert.equal(JSON.parse(readFileSync(link, "utf8")).designDir, designDir, "start leaves a link for this Pi session");
 
     const s = JSON.parse(readFileSync(join(designDir, ".runtime", "session.json"), "utf8"));
-    const post = (text) => fetch(new URL("/api/messages", s.url), { method: "POST", headers: { authorization: `Bearer ${s.token}`, "content-type": "application/json" }, body: JSON.stringify({ text }) });
+    const post = (text) => fetch(new URL("/api/messages", s.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
 
     await post("make it calmer");
     await until(() => pi.sent.length === 1, "the first message");
     assert.match(pi.sent[0].text, /make it calmer/);
-    assert.match(pi.sent[0].text, /Do not run `mockup wait`/);
+    assert.match(pi.sent[0].text, /then end your turn\.$/);
     assert.equal(pi.sent[0].options, undefined, "an idle agent gets it at once");
 
     // Still unanswered, it is not handed over again; a busy agent gets the

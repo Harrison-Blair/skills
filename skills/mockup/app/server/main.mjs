@@ -1,146 +1,135 @@
-// Detached server process started by `mockup start`. The token arrives in the
-// environment (never argv, which other users can list) and is written only to
-// the design's ignored .runtime/ directory.
-import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+// Detached server process started by `mockup start`, configured by the
+// environment (MOCKUP_DIR, MOCKUP_KIND, MOCKUP_NAME, MOCKUP_HARNESS,
+// MOCKUP_THREAD). The CLI sends its output to .runtime/server.log.
+import { randomUUID } from "node:crypto";
+import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
+import { join } from "node:path";
 import { createServer } from "./server.mjs";
 import { codexDeliver } from "./deliver.mjs";
 
-const args = Object.fromEntries(
-  process.argv.slice(2).reduce((pairs, arg, i, all) => (arg.startsWith("--") ? [...pairs, [arg.slice(2), all[i + 1]]] : pairs), []),
-);
-const designDir = args["design-dir"];
-const token = process.env.MOCKUP_TOKEN;
-if (!designDir || !token) {
-  console.error("usage: MOCKUP_TOKEN=... main.mjs --design-dir DIR [--harness NAME] [--thread ID]");
+const env = process.env;
+const dir = env.MOCKUP_DIR;
+const kind = env.MOCKUP_KIND;
+if (!dir || !["design", "once"].includes(kind)) {
+  console.error("usage: MOCKUP_DIR=/abs/dir MOCKUP_KIND=design|once [MOCKUP_NAME=...] [MOCKUP_HARNESS=...] [MOCKUP_THREAD=...] node main.mjs");
   process.exit(2);
 }
-delete process.env.MOCKUP_TOKEN;
-
-const runtime = join(designDir, ".runtime");
+const harness = env.MOCKUP_HARNESS || "claude";
+const thread = env.MOCKUP_THREAD || null;
+const runtime = join(dir, ".runtime");
 mkdirSync(runtime, { recursive: true });
+const file = join(runtime, "session.json");
 
-// One server per design: the log has a single writer. Every server takes a
-// mutex (server.lock.recover) before touching the lock, then, inside it,
-// reads the lock, removes it only if its owner is dead, and links its own.
-// Both files appear atomically with their owner's pid already in them (hard
-// links of a finished file), so no one sees a half-made one, and a live lock
-// is never removed. The mutex is cleared only when its owner is dead, never
-// by age: a paused owner is waited for, not overtaken.
-const lock = join(runtime, "server.lock");
-const mutex = `${lock}.recover`;
-function alive(pid) {
+// Codex is woken by the server; Claude and Pi listen with `mockup wait`.
+const deliver = harness === "codex" && thread ? codexDeliver({ thread }) : null;
+const id = randomUUID();
+const app = createServer({ dir, session: { id, kind, name: env.MOCKUP_NAME || null, harness }, deliver, stop: () => {
+  console.log("stop requested");
+  shutdown();
+} });
+const port = await app.listen(0);
+
+const session = {
+  id,
+  pid: process.pid,
+  port,
+  url: `http://127.0.0.1:${port}/`,
+  kind,
+  name: env.MOCKUP_NAME || null,
+  dir,
+  harness,
+  thread,
+  startedAt: new Date().toISOString(),
+};
+
+// The only reader of session.json here, with the CLI's rules: anything but a
+// regular file of at most 64 KB, or a file that is not JSON or not a usable
+// record, reads as none (stale), and is never waited on.
+const LIMIT = 65536;
+const read = () => {
+  let s;
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const pidIn = (file) => {
-  try {
-    return Number(readFileSync(file, "utf8"));
+    const entry = lstatSync(file);
+    if (!entry.isFile() || entry.size > LIMIT) return null;
+    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const bytes = Buffer.alloc(LIMIT + 1);
+      const n = readSync(fd, bytes, 0, bytes.length, 0);
+      if (n > LIMIT) return null;
+      s = JSON.parse(bytes.toString("utf8", 0, n));
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
-};
-const mine = `${lock}.${process.pid}`;
-writeFileSync(mine, String(process.pid));
-
-function takeMutex() {
-  for (;;) {
-    try {
-      linkSync(mine, mutex);
-      return;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-    }
-    const holder = pidIn(mutex);
-    if (holder === null) continue;
-    if (holder && alive(holder)) {
-      sleep(20);
-      continue;
-    }
-    // Its holder died mid-acquisition. Move it aside, and if what moved was a
-    // new live holder's mutex after all, put it back.
-    const aside = `${mutex}.${process.pid}`;
-    try {
-      renameSync(mutex, aside);
-    } catch (err) {
-      if (err.code === "ENOENT") continue;
-      throw err;
-    }
-    const moved = pidIn(aside);
-    if (moved && moved !== holder && alive(moved)) {
-      try {
-        linkSync(aside, mutex);
-      } catch {
-        // Someone else holds it now.
-      }
-    }
-    rmSync(aside, { force: true });
-  }
-}
-const releaseMutex = () => {
-  if (pidIn(mutex) === process.pid) rmSync(mutex, { force: true });
+  const usable = s !== null && typeof s === "object" && !Array.isArray(s) && typeof s.id === "string" && s.id !== "" &&
+    Number.isInteger(s.port) && s.port >= 1 && s.port <= 65535;
+  return usable ? s : null;
 };
 
-takeMutex();
-try {
-  const owner = existsSync(lock) ? pidIn(lock) : null;
-  if (owner && alive(owner)) {
-    releaseMutex();
-    rmSync(mine, { force: true });
-    console.error(`another server (pid ${owner}) already runs this design`);
-    process.exit(3);
-  }
-  // Tests widen the window between reading a dead owner and removing it.
-  const pause = Number(process.env.MOCKUP_TEST_TAKEOVER_PAUSE_MS || 0);
-  if (pause) sleep(pause * Math.random());
-  if (owner !== null) rmSync(lock, { force: true });
-  linkSync(mine, lock);
-} finally {
-  releaseMutex();
+// True when the server a session.json names answers with its id.
+function answers(s) {
+  return new Promise((ok) => {
+    if (!s) return ok(false);
+    // A total deadline, not an idle timeout: a reply that trickles a byte at
+    // a time would reset an idle timeout forever.
+    const timer = setTimeout(() => req.destroy(), 2000);
+    const settle = (answer) => {
+      clearTimeout(timer);
+      ok(answer);
+    };
+    const req = request({ host: "127.0.0.1", port: s.port, path: "/api/ping", headers: { host: `127.0.0.1:${s.port}` } }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => {
+        try {
+          settle(JSON.parse(body).id === s.id);
+        } catch {
+          settle(false);
+        }
+      });
+      // A reply cut off before its end is no answer.
+      for (const cut of ["aborted", "error", "close"]) res.on(cut, () => settle(false));
+    });
+    req.on("error", () => settle(false));
+    req.end();
+  });
 }
-rmSync(mine, { force: true });
-const releaseLock = () => {
+
+// One server per folder: session.json is created exclusively, complete (a
+// hard link of a finished file), so the log has a single writer. A file whose
+// server does not answer is stale: remove it and try once more.
+const tmp = `${file}.${process.pid}`;
+writeFileSync(tmp, JSON.stringify(session, null, 2));
+for (let attempt = 0; ; attempt++) {
   try {
-    if (Number(readFileSync(lock, "utf8")) === process.pid) rmSync(lock, { force: true });
-  } catch {
-    // Already gone.
+    linkSync(tmp, file);
+    break;
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
   }
-};
-process.on("exit", releaseLock);
-
-// Codex is woken by the server; Claude and Pi listen with `mockup wait`.
-let app;
-const deliver = args.harness === "codex" && args.thread ? codexDeliver({ thread: args.thread, designDir, rounds: () => app.store.roundList() }) : null;
-app = createServer({
-  designDir,
-  token,
-  deliver,
-  staticDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dist"),
-});
-const port = await app.listen(Number(args.port ?? 0));
-
-const session = {
-  pid: process.pid,
-  port,
-  token,
-  url: `http://127.0.0.1:${port}/`,
-  harness: args.harness ?? "claude",
-  thread: args.thread ?? null,
-  startedAt: new Date().toISOString(),
-};
-const tmp = join(runtime, `session.json.${process.pid}`);
-writeFileSync(tmp, JSON.stringify(session, null, 2), { mode: 0o600 });
-renameSync(tmp, join(runtime, "session.json"));
+  const existing = read();
+  if (existing && (await answers(existing))) {
+    rmSync(tmp, { force: true });
+    console.log(`already running: ${existing.url}`);
+    await app.close();
+    process.exit(0);
+  }
+  if (attempt === 1) {
+    rmSync(tmp, { force: true });
+    console.error(`${file} exists and its server does not answer`);
+    process.exit(1);
+  }
+  // Whatever is there, a folder included.
+  rmSync(file, { recursive: true, force: true });
+}
+rmSync(tmp, { force: true });
 console.log(`listening on ${session.url}`);
 
 async function shutdown() {
-  rmSync(join(runtime, "session.json"), { force: true });
+  if (read()?.id === id) rmSync(file, { force: true });
   await app.close();
   process.exit(0);
 }

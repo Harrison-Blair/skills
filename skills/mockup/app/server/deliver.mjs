@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { format } from "../lib/format.mjs";
 
-export function codexDeliver({ thread, designDir, rounds }) {
+export function codexDeliver({ thread }) {
   let queue = Promise.resolve();
   const run = (text) =>
     new Promise((ok, fail) => {
@@ -17,7 +17,7 @@ export function codexDeliver({ thread, designDir, rounds }) {
       child.on("exit", (code) => (code === 0 ? ok() : fail(new Error(err.trim() || `codex queue exited with ${code}`))));
     });
   return (message) => {
-    const next = queue.then(() => run(format([message], rounds(), designDir, "codex")));
+    const next = queue.then(() => run(format([message], "codex")));
     queue = next.catch(() => {});
     return next;
   };

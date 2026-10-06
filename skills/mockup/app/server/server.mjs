@@ -1,99 +1,81 @@
-// HTTP server for one agent session. Loopback only; every API call needs the
-// session token (cookie for the browser, bearer header for the CLI); Host and
-// Origin are checked so other web pages cannot drive the agent.
+// HTTP server for one agent session. Loopback only and unauthenticated: every
+// route belongs to a check group (see ROUTES) that decides, before any side
+// effect, which callers may use it. Browsers cannot call agent routes, and
+// sandboxed pages (cross-site, sometimes Origin: null) reach only /d/ and the
+// page script.
 import { createServer as createHttpServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, join, normalize, resolve, sep } from "node:path";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, extname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { RoundError, commentable, decisionError, designFile, findItem, normalizeRound } from "./round.mjs";
-import { BUNDLE, PREVIEW_DIR, bundlePreview } from "./preview.mjs";
+import { malformed } from "../shell/shape.js";
+import { TYPES, pageHeaders, servePage, sessionFile } from "./pages.mjs";
 
+const APP = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_BODY = 1024 * 1024;
-const MAX_UPLOAD = 10 * 1024 * 1024;
-// Uploads are identified by their bytes, never by the name or type claimed.
-const MAGIC = [
-  [".png", (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))],
-  [".jpg", (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
-  [".gif", (b) => b.subarray(0, 4).toString("latin1") === "GIF8"],
-  [".webp", (b) => b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP"],
-];
-const IMAGE_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" };
+const MAX_MESSAGE = 256 * 1024;
 // No agent activity for this long while a message is delivered: the agent is
 // probably stuck on something in its terminal (a permission prompt, a crash).
 export const STALL_MS = 2 * 60 * 1000;
-const TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".woff2": "font/woff2",
+const DEVICES = ["fit", "phone", "tablet", "desktop"];
+const KIT = ["core.js", "kit.js", "annotate.js"];
+const SHELL_HEADERS = {
+  "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-src 'self'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "cache-control": "no-store",
 };
 
-// Previews run agent-written code: an opaque origin (no allow-same-origin)
-// keeps it away from the session cookie and the API.
-const PREVIEW_CSP = [
-  "sandbox allow-scripts",
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline' https:",
-  "img-src data: blob: https:",
-  "font-src data: https:",
-  "connect-src data: blob: https:",
-  "frame-ancestors 'self'",
-].join("; ");
+// Exact routes and prefixes, with their check group.
+const ROUTES = {
+  "/": "browser",
+  "/kit/page.js": "page",
+  "/api/ping": "host",
+  "/api/state": "browser",
+  "/api/events": "browser",
+  "/api/messages": "browser",
+  "/api/agent/wait": "agent",
+  "/api/agent/say": "agent",
+  "/api/agent/show": "agent",
+  "/api/agent/stop": "agent",
+};
+const PREFIXES = { "/shell/": "browser", "/d/": "page" };
 
-// Builds every preview block, recording the bundle it shows. A build error
-// names the block, like any other bad field.
-async function bundlePreviews(round, designDir) {
-  for (const [i, page] of round.pages.entries()) {
-    for (const [j, b] of page.blocks.entries()) {
-      if (b.type !== "preview") continue;
-      try {
-        b.bundle = await bundlePreview(designDir, b.src);
-      } catch (err) {
-        throw new RoundError(`pages[${i}].blocks[${j}].src: "${b.src}" failed to build:\n${err.message}`);
-      }
-    }
-  }
-  return round;
-}
-
-export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, deliver = null }) {
-  const store = new Store(join(designDir, "log.jsonl"));
+export function createServer({ dir, session, stallMs = STALL_MS, deliver = null, stop = null, shellDir = join(APP, "shell"), kitDir = join(APP, "kit") }) {
+  const store = new Store(join(dir, "log.jsonl"));
   const sse = new Set();
   const waiters = new Set();
   let port = 0;
   let lastActivity = Date.now();
   let lastAgent = null;
-  // Set when the user presses "End session"; the agent then runs `mockup stop`.
-  let ended = false;
 
-  const cookieName = () => `mockup_${port}`;
   const origins = () => [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
   const hosts = () => [`127.0.0.1:${port}`, `localhost:${port}`];
 
-  function tokenOk(candidate) {
-    if (typeof candidate !== "string") return false;
-    const a = Buffer.from(candidate);
-    const b = Buffer.from(token);
-    return a.length === b.length && timingSafeEqual(a, b);
+  // An error message when the request may not use its route's group.
+  function refused(req, group) {
+    const h = req.headers;
+    if (!hosts().includes(h.host)) return [421, "bad host"];
+    if (group === "browser") {
+      if (h.origin !== undefined && !origins().includes(h.origin)) return [403, "bad origin"];
+      if (h["sec-fetch-site"] === "cross-site") return [403, "cross-site"];
+    }
+    if (group === "agent" && (h.origin !== undefined || Object.keys(h).some((k) => k.startsWith("sec-fetch-")))) return [403, "agent routes are for the CLI only"];
+    if (group === "page" && req.method !== "GET") return [405, "method not allowed"];
+    return null;
   }
 
-  function authed(req) {
-    const auth = req.headers.authorization;
-    if (auth?.startsWith("Bearer ") && tokenOk(auth.slice(7))) return true;
-    const cookies = Object.fromEntries(
-      (req.headers.cookie ?? "").split(";").map((c) => c.trim().split("=")).filter((p) => p.length === 2),
-    );
-    return tokenOk(cookies[cookieName()]);
+  // Headers every response on a path carries, refusals and errors included.
+  function routeHeaders(pathname) {
+    if (pathname.startsWith("/d/")) return pageHeaders(port);
+    if (pathname === "/" || pathname.startsWith("/shell/")) return SHELL_HEADERS;
+    return {};
   }
 
   function agentState() {
     const delivered = store.pending().filter((m) => m.status === "delivered");
     const stalled = delivered.length > 0 && Date.now() - lastActivity > stallMs;
-    return { listening: waiters.size > 0, stalled, lastActivity: new Date(lastActivity).toISOString() };
+    return { listening: waiters.size > 0, stalled };
   }
 
   function broadcast(type, data) {
@@ -103,7 +85,7 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
 
   function publishAgent() {
     const state = agentState();
-    const key = JSON.stringify([state.listening, state.stalled]);
+    const key = JSON.stringify(state);
     if (key !== lastAgent) {
       lastAgent = key;
       broadcast("agent", state);
@@ -128,7 +110,7 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
     const out = give.map((m) => (m.status === "queued" ? store.setStatus(m.id, "delivered") : { ...m, redelivered: true }));
     for (const m of out) broadcast("message", m);
     touch();
-    send(waiter.res, 200, { messages: out });
+    send(waiter.res, 200, { messages: out, harness: session.harness, dir });
   }
 
   function send(res, status, body, headers = {}) {
@@ -152,8 +134,8 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
     });
   }
 
-  async function readJson(req) {
-    const buf = await readBody(req, MAX_BODY);
+  async function readJson(req, max = MAX_BODY) {
+    const buf = await readBody(req, max);
     try {
       return buf.length ? JSON.parse(buf.toString("utf8")) : {};
     } catch {
@@ -161,150 +143,68 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
     }
   }
 
-  function checkMarks(list, where) {
-    if (!Array.isArray(list)) throw new RoundError(`${where}: must be a list`);
-    if (list.length > 50) throw new RoundError(`${where}: at most 50 marks`);
-    return list.map((m, j) => {
-      const ok = m && ["pin", "circle"].includes(m.shape) && [m.x, m.y].every((v) => typeof v === "number" && v >= 0 && v <= 1) && (m.shape === "pin" || (typeof m.r === "number" && m.r > 0 && m.r <= 1));
-      if (!ok) throw new RoundError(`${where}[${j}]: needs shape pin|circle, x and y from 0 to 1, and r for circles`);
-      if (m.note !== undefined && (typeof m.note !== "string" || m.note.length > 2000)) throw new RoundError(`${where}[${j}].note: must be text up to 2000 characters`);
-      return { shape: m.shape, x: m.x, y: m.y, ...(m.shape === "circle" ? { r: m.r } : {}), ...(m.note?.trim() ? { note: m.note } : {}) };
-    });
-  }
-
-  // Pins and circles on a round image, or on a snapshot of one of its previews.
-  function checkAnnotation(an, where) {
-    const round = store.rounds.get(an?.round);
-    if (!round) throw new RoundError(`${where}: unknown round ${an?.round}`);
-    if (an.item !== undefined && findItem(round, an.item)?.type !== "preview") throw new RoundError(`${where}.item: not a preview in ${an.round}`);
-    return {
-      round: an.round,
-      ...(an.item !== undefined ? { item: an.item } : {}),
-      image: designFile(designDir, an.image, `${where}.image`),
-      marks: checkMarks(an.marks, `${where}.marks`),
-    };
-  }
-
-  // What the browser attaches to a message: selected items, uploaded images,
-  // and pins or circles drawn on round images (with a rendered copy).
-  function checkAttachments(a) {
-    if (a == null) return null;
-    const list = (v, where) => {
-      if (v === undefined) return [];
-      if (!Array.isArray(v)) throw new RoundError(`${where}: must be a list`);
-      return v;
-    };
-    const roundOf = (id, where) => {
-      const r = store.rounds.get(id);
-      if (!r) throw new RoundError(`${where}: unknown round ${id}`);
-      return r;
-    };
-    const selections = list(a.selections, "selections").map((sel, i) => {
-      const item = findItem(roundOf(sel.round, `selections[${i}]`), sel.item);
-      if (!item) throw new RoundError(`selections[${i}]: unknown item ${sel.item}`);
-      return { round: sel.round, item: sel.item, label: item.title ?? item.text ?? item.caption ?? sel.item };
-    });
-    const uploads = list(a.uploads, "uploads").map((p, i) => designFile(designDir, p, `uploads[${i}]`));
-    const annotations = list(a.annotations, "annotations").map((an, i) => ({
-      ...checkAnnotation(an, `annotations[${i}]`),
-      ...(an.render ? { render: designFile(designDir, an.render, `annotations[${i}].render`) } : {}),
-    }));
-    if (!selections.length && !uploads.length && !annotations.length) return null;
-    return { selections, uploads, annotations };
-  }
-
-  function serveFile(res, pathname) {
-    let rel;
+  // The shell's own files, confined to shellDir.
+  function serveShell(res, rel) {
+    let file;
     try {
-      rel = designFile(designDir, decodeURIComponent(pathname.slice("/files/".length)), "file");
+      const root = realpathSync(shellDir);
+      file = realpathSync(join(shellDir, rel));
+      const inside = relative(root, file);
+      if (!inside || inside.startsWith("..") || inside.startsWith(sep) || !statSync(file).isFile()) file = null;
     } catch {
-      return send(res, 404, { error: "not found" });
+      file = null;
     }
-    res.writeHead(200, {
-      "content-type": IMAGE_TYPES[extname(rel).toLowerCase()],
-      // Even an SVG opened directly cannot run script in this origin.
-      "content-security-policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
-      "x-content-type-options": "nosniff",
-      "cache-control": "private, max-age=3600",
-    });
-    res.end(readFileSync(join(designDir, ...rel.split("/"))));
+    if (!file) return send(res, 404, { error: "not found" }, SHELL_HEADERS);
+    res.writeHead(200, { ...SHELL_HEADERS, "content-type": TYPES[extname(file).toLowerCase()] ?? "application/octet-stream" });
+    res.end(readFileSync(file));
   }
 
-  function serveStatic(req, res, pathname) {
-    if (!staticDir) return send(res, 404, { error: "no client build" });
-    const root = resolve(staticDir);
-    const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-    const file = resolve(root, normalize(rel));
-    if (file !== root && !file.startsWith(root + sep)) return send(res, 403, { error: "forbidden" });
-    const target = existsSync(file) && statSync(file).isFile() ? file : join(root, "index.html");
-    if (!existsSync(target)) return send(res, 404, { error: "not found" });
-    res.writeHead(200, {
-      "content-type": TYPES[extname(target)] ?? "application/octet-stream",
-      "content-security-policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-    });
-    res.end(readFileSync(target));
+  // One classic script, read on every request so kit edits show on reload.
+  function servePageScript(res) {
+    const parts = KIT.map((f) => join(kitDir, f)).filter((f) => existsSync(f)).map((f) => readFileSync(f, "utf8") + "\n");
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*" });
+    res.end(parts.join(""));
   }
 
-  async function handle(req, res) {
-    if (!hosts().includes(req.headers.host)) return send(res, 421, { error: "bad host" });
-    const origin = req.headers.origin;
-    if (origin && !origins().includes(origin)) return send(res, 403, { error: "bad origin" });
-    if (req.headers["sec-fetch-site"] === "cross-site") return send(res, 403, { error: "cross-site" });
+  function draftsError(drafts) {
+    if (!Array.isArray(drafts)) return "drafts must be a list";
+    if (drafts.some((d) => typeof d?.id !== "string" || typeof d?.kind !== "string")) return "every draft needs a string id and kind";
+    const bad = drafts.find(malformed);
+    return bad ? `Draft ${bad.id} is not a well-formed ${bad.kind} draft.` : null;
+  }
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
+  async function handle(req, res, url, headers) {
+    if (!url) return send(res, 400, { error: "bad request target" }, headers);
     const { pathname } = url;
+    const prefix = Object.keys(PREFIXES).find((p) => pathname.startsWith(p));
+    const group = ROUTES[pathname] ?? PREFIXES[prefix] ?? "host";
+    const refusal = refused(req, group);
+    if (refusal) return send(res, refusal[0], { error: refusal[1] }, headers);
 
-    // Opening the printed link trades the token for a cookie, then drops it from the URL.
-    if (req.method === "GET" && pathname === "/" && url.searchParams.has("token")) {
-      if (!tokenOk(url.searchParams.get("token"))) return send(res, 403, { error: "bad token" });
-      res.writeHead(302, {
-        location: "/",
-        "set-cookie": `${cookieName()}=${token}; HttpOnly; SameSite=Strict; Path=/`,
-        "referrer-policy": "no-referrer",
-      });
-      return res.end();
+    if (prefix) {
+      let rel;
+      try {
+        rel = decodeURIComponent(pathname.slice(prefix.length));
+      } catch {
+        return send(res, 404, { error: "not found" }, headers);
+      }
+      if (prefix === "/d/") return servePage(res, dir, rel, port);
+      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" }, headers);
+      return serveShell(res, rel);
     }
 
-    if (pathname.startsWith("/files/")) {
-      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
-      if (!authed(req)) return send(res, 401, { error: "unauthorized" });
-      return serveFile(res, pathname);
-    }
-    if (pathname.startsWith("/previews/")) {
-      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
-      if (!authed(req)) return send(res, 401, { error: "unauthorized" });
-      const hash = pathname.slice("/previews/".length);
-      const file = join(designDir, ...PREVIEW_DIR.split("/"), `${hash}.html`);
-      if (!BUNDLE.test(hash) || !existsSync(file)) return send(res, 404, { error: "not found" });
-      res.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
-        "content-security-policy": PREVIEW_CSP,
-        "x-content-type-options": "nosniff",
-        "referrer-policy": "no-referrer",
-        "cache-control": "private, max-age=31536000, immutable",
-      });
-      return res.end(readFileSync(file));
-    }
-    if (!pathname.startsWith("/api/")) {
-      if (req.method !== "GET") return send(res, 405, { error: "method not allowed" });
-      return serveStatic(req, res, pathname);
-    }
-    if (!authed(req)) return send(res, 401, { error: "unauthorized" });
+    switch (`${req.method} ${pathname}`) {
+      case "GET /":
+        return serveShell(res, "index.html");
 
-    const route = `${req.method} ${pathname}`;
-    switch (route) {
+      case "GET /kit/page.js":
+        return servePageScript(res);
+
+      case "GET /api/ping":
+        return send(res, 200, { id: session.id, pid: process.pid });
+
       case "GET /api/state":
-        return send(res, 200, {
-          design: basename(designDir),
-          messages: store.list(),
-          rounds: store.roundList(),
-          decisions: store.decisions,
-          annotations: store.annotations,
-          agent: agentState(),
-          ended,
-        });
+        return send(res, 200, { session, showing: store.showing, messages: store.list(), agent: agentState() });
 
       case "GET /api/events": {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
@@ -315,44 +215,20 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
       }
 
       case "POST /api/messages": {
-        const body = await readJson(req);
-        if (ended) return send(res, 409, { error: "session ended" });
-        const kind = body.kind ?? "chat";
+        const body = await readJson(req, MAX_MESSAGE);
+        const drafts = body.drafts ?? [];
+        const error = draftsError(drafts);
+        if (error) return send(res, 400, { error });
+        const kind = body.kind ?? (drafts.length ? "feedback" : "chat");
         if (!["chat", "feedback", "exit"].includes(kind)) return send(res, 400, { error: "unknown kind" });
-        const round = body.round ?? null;
-        if (round !== null && !store.rounds.has(round)) return send(res, 400, { error: "unknown round" });
-        let attachments;
-        const renders = {};
-        try {
-          attachments = checkAttachments(body.attachments);
-          // Copies of marked images with the marks drawn on, for the agent.
-          for (const [key, r] of Object.entries(body.renders ?? {})) {
-            if (typeof r?.id !== "string") throw new RoundError(`renders.${key}.id: must name the marks revision drawn`);
-            renders[key] = { id: r.id, path: r.path == null ? null : designFile(designDir, r.path, `renders.${key}.path`) };
-          }
-        } catch (err) {
-          return send(res, 400, { error: err.message });
-        }
         const text = typeof body.text === "string" ? body.text : "";
-        // Feedback may be decisions and attachments alone; anything else needs words.
-        // Ending must not strand marks the page did not draw (edited while sending).
-        const drawn = new Set(store.drawn(renders).map((d) => d.annotation.id));
-        if (kind === "exit" && store.unsentAnnotations().some((a) => !drawn.has(a.id))) {
-          return send(res, 409, { error: "Some marks changed while sending; end the session again to include them." });
-        }
-        const hasContent = text.trim() || attachments || (kind === "feedback" && (store.unsentDecisions().length || drawn.size));
-        if (!hasContent && kind !== "exit") return send(res, 400, { error: "nothing to send" });
-        const message = store.add({ from: "user", kind, text, attachments, round, renders });
+        if (!text.trim() && !drafts.length && kind !== "exit") return send(res, 400, { error: "nothing to send" });
+        const page = typeof body.page === "string" ? body.page : null;
+        const message = store.add({ from: "user", kind, text, page, drafts });
         broadcast("message", message);
-        for (const d of message.decisions ?? []) broadcast("decision", { ...d, sent: message.id });
-        for (const an of message.annotations ?? []) broadcast("annotation", { ...an, sent: message.id });
-        if (kind === "exit") {
-          ended = true;
-          broadcast("session", { ended });
-        }
         send(res, 201, message);
         if (deliver) {
-          // Push-style harnesses (Codex, Pi) get the message immediately.
+          // Push-style harnesses (Codex) get the message immediately.
           Promise.resolve(deliver(message)).then(
             () => { broadcast("message", store.setStatus(message.id, "delivered")); touch(); },
             (err) => broadcast("message", store.setStatus(message.id, "failed", String(err?.message ?? err))),
@@ -388,75 +264,42 @@ export function createServer({ designDir, token, staticDir, stallMs = STALL_MS, 
         return send(res, 201, message);
       }
 
-      // A like, dislike, choice or draft approval. Saved now, sent with the next message.
-      case "POST /api/decisions": {
+      // What the shell shows. Phase 1 shows exactly one page.
+      case "POST /api/agent/show": {
         const body = await readJson(req);
-        if (ended) return send(res, 409, { error: "session ended" });
-        const round = store.rounds.get(body.round);
-        let decision;
-        if (body.comment !== undefined) {
-          // A comment on one item; an empty one clears it.
-          if (!round || !commentable(round, body.item)) return send(res, 400, { error: "unknown round or item" });
-          if (typeof body.comment !== "string" || body.comment.length > 4000) return send(res, 400, { error: "comment must be text up to 4000 characters" });
-          decision = store.decide({ round: body.round, item: body.item, comment: body.comment });
-        } else {
-          const error = round ? decisionError(round, body.item, body.value) : "unknown round or item";
-          if (error) return send(res, 400, { error });
-          decision = store.decide({ round: body.round, item: body.item, value: body.value });
-        }
-        broadcast("decision", decision);
-        return send(res, 201, decision);
-      }
-
-      // The user's pins and circles on one image, replacing any earlier set.
-      // Saved now, sent with the next message.
-      case "POST /api/annotations": {
-        const body = await readJson(req);
-        if (ended) return send(res, 409, { error: "session ended" });
-        let annotation;
-        try {
-          annotation = store.annotate(checkAnnotation(body, "annotation"));
-        } catch (err) {
-          return send(res, 400, { error: err.message });
-        }
-        broadcast("annotation", annotation);
-        return send(res, 201, annotation);
-      }
-
-      // Raw image bytes. kind=render is a copy of a round image with the user's
-      // marks drawn on; it may contain web images, so it goes to ignored renders/.
-      case "POST /api/uploads": {
-        const buf = await readBody(req, MAX_UPLOAD);
-        const ext = MAGIC.find(([, test]) => buf.length > 12 && test(buf))?.[0];
-        if (!ext) return send(res, 415, { error: "only PNG, JPEG, WebP and GIF images are accepted" });
-        const dir = url.searchParams.get("kind") === "render" ? "renders" : "assets/uploads";
-        mkdirSync(join(designDir, ...dir.split("/")), { recursive: true });
-        const rel = `${dir}/${randomUUID()}${ext}`;
-        writeFileSync(join(designDir, ...rel.split("/")), buf);
-        return send(res, 201, { path: rel });
-      }
-
-      case "POST /api/agent/round": {
-        const body = await readJson(req);
-        let round;
-        try {
-          round = store.addRound(await bundlePreviews(normalizeRound(body, designDir), designDir));
-        } catch (err) {
-          return send(res, 400, { error: err.message });
-        }
-        broadcast("round", round);
+        const { pages, title = null, device = "fit" } = body;
+        if (!Array.isArray(pages) || pages.length !== 1) return send(res, 400, { error: "pages must list exactly one page." });
+        if (!sessionFile(dir, pages[0])) return send(res, 400, { error: `${pages[0]} is not a file under pages/, assets/ or approved/ in ${dir}.` });
+        if (title !== null && typeof title !== "string") return send(res, 400, { error: "title must be text." });
+        if (!DEVICES.includes(device)) return send(res, 400, { error: `device must be one of ${DEVICES.join(", ")}.` });
+        const showing = store.show({ pages, title, device });
+        broadcast("show", showing);
         touch();
-        return send(res, 201, round);
+        return send(res, 200, { ok: true });
       }
+
+      // `mockup stop`: answer first, then stop.
+      case "POST /api/agent/stop":
+        if (stop) res.once("finish", stop);
+        return send(res, 200, { ok: true });
 
       default:
-        return send(res, 404, { error: "not found" });
+        return send(res, ROUTES[pathname] ? 405 : 404, { error: ROUTES[pathname] ? "method not allowed" : "not found" }, headers);
     }
   }
 
+  // The path is parsed once, and its headers chosen once, for every response
+  // to the request, errors included; an unparsable target gets the strictest.
   const server = createHttpServer((req, res) => {
-    handle(req, res).catch((err) => {
-      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message });
+    let url = null;
+    try {
+      url = new URL(req.url, "http://127.0.0.1");
+    } catch {
+      // Answered by handle.
+    }
+    const headers = url ? routeHeaders(url.pathname) : pageHeaders(port);
+    handle(req, res, url, headers).catch((err) => {
+      if (!res.headersSent) send(res, err.status ?? 500, { error: err.message }, headers);
       else res.end();
     });
   });
