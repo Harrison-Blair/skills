@@ -537,12 +537,12 @@ def _selftest_cli():
         text = os.path.join(d, "text.md")
         with open(base, "w", encoding="utf-8") as f:
             f.write("| Term | Meaning | Do not use |\n| --- | --- | --- |\n"
-                    "| start | Begin. | launch |\n")
+                    "| start | Begin. | launch |\n| stop | End. | cease |\n")
         with open(project, "w", encoding="utf-8") as f:
             f.write("| Term | Meaning | Do not use |\n| --- | --- | --- |\n"
                     "| launch | Open an agent pane. | |\n| stop | End. | halt |\n")
         with open(text, "w", encoding="utf-8") as f:
-            f.write("Launch the agent. Halt it.\n")
+            f.write("Launch the agent. Halt it. Cease it.\n")
 
         def run(args, stdin=None):
             out = io.StringIO()
@@ -557,7 +557,8 @@ def _selftest_cli():
             return [v["match"] for v in json.loads(out.getvalue())["violations"]
                     if v["rule"] == "glossary-term"]
 
-        assert run(["--glossary", base, text]) == ["Launch"]
+        assert run(["--glossary", base, text]) == ["Launch", "Cease"]
+        # the project's "stop" row replaces the base row, so only its ban applies
         assert run(["--glossary", base, "--glossary", project, text]) == ["Halt"]
         assert run(["--glossary", base], stdin="Launch it.") == ["Launch"]
 
