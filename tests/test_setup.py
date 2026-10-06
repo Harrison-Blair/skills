@@ -98,7 +98,7 @@ class SetupTests(unittest.TestCase):
         self.env["PATH"] = str(bin_dir) + os.pathsep + self.env["PATH"]
         self.skill = self.add_skill(self.repo / "skills/shared-one")
         (self.repo / "pi/skills-autopull").mkdir(parents=True)
-        (self.repo / "pi/mockup").mkdir(parents=True)
+        (self.repo / "pi/example-extension").mkdir(parents=True)
 
     def add_skill(self, path):
         path.mkdir(parents=True)
@@ -497,7 +497,7 @@ class SetupTests(unittest.TestCase):
         self.assertTrue((self.claude / "machine-shared").is_symlink())
         # Every folder under pi/ is linked as an extension of the same name.
         self.assertTrue((extensions / "skills-autopull").is_symlink())
-        self.assertTrue((extensions / "mockup").is_symlink())
+        self.assertTrue((extensions / "example-extension").is_symlink())
         # Everything below is somebody else's and has to come through untouched.
         local = self.add_skill(self.claude / "claude-only")
         external = self.add_skill(self.base / "external")
@@ -507,7 +507,7 @@ class SetupTests(unittest.TestCase):
         result = self.run_setup("--uninstall")
         self.assertIn("removed:", result.stdout)
         for gone in (self.claude / "shared-one", self.shared / "shared-one",
-                     extensions / "skills-autopull", extensions / "mockup"):
+                     extensions / "skills-autopull", extensions / "example-extension"):
             self.assertFalse(gone.is_symlink(), gone)
             self.assertFalse(gone.exists(), gone)
         self.assertTrue(self.claude.is_dir())

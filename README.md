@@ -11,7 +11,7 @@ of truth for synced skills. Machine-local skills can live alongside its links.
 skills/<name>/SKILL.md   one skill per directory (see skills/agnostic-skill for conventions)
 hooks/claude.json        SessionStart entry merged into ~/.claude/settings.json
 hooks/codex.json         SessionStart entry merged into ~/.codex/hooks.json
-pi/<name>/               Pi extensions (skills-autopull, mockup), linked into ~/.pi/agent/extensions
+pi/<name>/               Pi extensions (skills-autopull), linked into ~/.pi/agent/extensions
 statusline/              statusline renderer and its shared config.json
 scripts/setup.sh         one-time setup, and the --sync command the hooks run
 ```
@@ -66,8 +66,8 @@ absent:
   with a warning.
 - Links each Pi extension in `pi/` into `~/.pi/agent/extensions/<name>`.
 - Writes a small wrapper into `~/.local/bin` for every command a skill ships in
-  `skills/<name>/bin/`, so agents in any harness run it by its bare name (for
-  example `mockup`). A file there that is not one of these wrappers, or a
+  `skills/<name>/bin/`, so agents in any harness run it by its bare name.
+  A file there that is not one of these wrappers, or a
   wrapper for another clone that still exists, is left alone with a warning;
   wrappers for commands removed from this clone are deleted. Setup warns when
   `~/.local/bin` is not on `PATH`.
