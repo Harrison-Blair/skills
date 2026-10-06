@@ -38,7 +38,8 @@ Commands change between Fledge versions. Before first use, read `fledge agent --
 - Worker messages arrive with a `ᛉ fledge message from ...` header. Reply with the header's reply command, and address workers by name.
 - Run a feature's verifier in that feature's checkout (`fledge agent spawn --worktree <checkout path>`). The implementer commits and leaves a clean tree before verification and makes no edits while it runs. The verifier undoes experimental changes, confirms a clean `git status`, and runs `fledge task verify` only when no failing findings remain, naming the checked commit when it verifies again after repairs.
 - Spawn prompts start with a sender header, so ask a worker in plain words to use a skill; a leading slash command will not run. Pass absolute paths to `--cwd`.
-- Stop only the workers you spawned, after their results and any verification are read.
+- Spawn a new agent for each pass, named for its role, task, and pass (`implementer-auth-2`), and assign it the task; a repair or a repeat verification never goes back to an earlier pass's agent by message. A new implementer opens the existing checkout (`--worktree <checkout path>`). Two verifiers on one first review get one task each, named for their area (`verifier-auth-browser-1`, `verifier-auth-process-1`), in the same checkout; neither edits it.
+- Stop only the workers you spawned, each as soon as its result is read.
 - When Fledge fails or lacks a capability, fall back to the harness tool for that step, tell the user, and record the friction where the repository asks for it.
 - When a worker runs on Codex, put the escalation rule from the [Codex note](references/providers/codex.md) in its brief.
 
